@@ -495,6 +495,61 @@ class AgentLoopTest {
 
         assertEquals(listOf("before!", "after!"), message.texts())
     }
+
+    @Test
+    fun `default hooks preserve legacy failure without a recovery request`() = runTest {
+        provider.stream { throw IllegalStateException("context_length_exceeded") }
+
+        val result = runCatching { runToEnd() }
+
+        assertTrue(result.isFailure)
+        assertEquals(1, provider.requests.size)
+    }
+
+    @Test
+    fun `context recovery does not execute completed tools twice`() = runTest {
+        var executions = 0
+        var recoveries = 0
+        val search = tool("search") { executions++; ok() }
+        provider.stream { toolCall("call-1", "search"); finish() }
+        provider.stream { throw IllegalStateException("context_length_exceeded") }
+        provider.stream { text("answer"); finish() }
+        val recovering = object : AgentHooks by hooks {
+            override suspend fun recoverContext(messages: List<UIMessage>, error: Throwable): StepRequest {
+                recoveries++
+                assertTrue(messages.last().getTools().single().isExecuted)
+                return StepRequest(listOf(UIMessage.user("history summary"), messages.last()), TextGenerationParams(model))
+            }
+        }
+
+        val finished = runToEnd(request(tools = listOf(search)), recovering).finished()
+
+        assertEquals(1, executions)
+        assertEquals(1, recoveries)
+        assertEquals(3, provider.requests.size)
+        assertEquals(listOf("answer"), finished.message.texts())
+        assertEquals(2, finished.message.stepCount)
+    }
+
+    @Test
+    fun `recovery replaces a failed stream and never retries a second recovery failure`() = runTest {
+        var recoveries = 0
+        provider.stream { text("partial"); throw IllegalStateException("context_length_exceeded") }
+        provider.stream { throw IllegalStateException("context_length_exceeded again") }
+        val recovering = object : AgentHooks by hooks {
+            override suspend fun recoverContext(messages: List<UIMessage>, error: Throwable): StepRequest {
+                recoveries++
+                assertFalse(messages.any { it.toText().contains("partial") })
+                return StepRequest(listOf(UIMessage.user("summary")), TextGenerationParams(model))
+            }
+        }
+
+        val result = runCatching { runToEnd(hooks = recovering) }
+
+        assertTrue(result.isFailure)
+        assertEquals(1, recoveries)
+        assertEquals(2, provider.requests.size)
+    }
 }
 
 /** 按调用顺序依次返回预设的响应，并记录每次请求 */

@@ -67,7 +67,7 @@ object DocumentAsPromptTransformer : InputMessageTransformer {
         return "/upload/${file.name}"
     }
 
-    private fun readDocumentContent(document: UIMessagePart.Document): String {
+    internal fun readDocumentContent(document: UIMessagePart.Document): String {
         val file = runCatching { document.url.toUri().toFile() }.getOrNull()
             ?: return "[ERROR, invalid file uri: ${document.fileName}]"
         if (!file.exists() || !file.isFile) {

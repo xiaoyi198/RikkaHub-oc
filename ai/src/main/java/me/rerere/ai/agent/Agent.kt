@@ -35,6 +35,9 @@ interface AgentHooks {
      */
     suspend fun prepareStep(messages: List<UIMessage>): StepRequest
 
+    /** Optional size-error recovery. Called once per step, before any of its tools can execute. */
+    suspend fun recoverContext(messages: List<UIMessage>, error: Throwable): StepRequest? = null
+
     /**
      * 生成过程中每次发出更新之前调用，返回值只用于这一次 [AgentEvent.MessageUpdated]，不会写回循环内部。
      * 适合 think 标签这类要边生成边展示、等这一步结束才真正处理的转换；[newPartsFrom] 的含义同 [finishStep]。

@@ -9,8 +9,6 @@ plugins {
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.ksp)
-    alias(libs.plugins.google.services)
-    alias(libs.plugins.firebase.crashlytics)
     alias(libs.plugins.baselineprofile)
 }
 
@@ -23,11 +21,11 @@ android {
     }
 
     defaultConfig {
-        applicationId = "me.rerere.rikkahub"
+        applicationId = "me.rerere.rikkahub.oc"
         minSdk = 26
         targetSdk = 37
-        versionCode = 193
-        versionName = "3.1.0"
+        versionCode = 194
+        versionName = "3.1.0-oc.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -54,7 +52,7 @@ android {
             val localPropertiesFile = rootProject.file("local.properties")
 
             if (localPropertiesFile.exists()) {
-                localProperties.load(FileInputStream(localPropertiesFile))
+                FileInputStream(localPropertiesFile).use { localProperties.load(it) }
 
                 val storeFilePath = localProperties.getProperty("storeFile")
                 val storePasswordValue = localProperties.getProperty("storePassword")
@@ -188,11 +186,6 @@ dependencies {
     implementation(libs.androidx.navigation3.ui)
     implementation(libs.androidx.lifecycle.viewmodel.navigation3)
     implementation(libs.androidx.material3.adaptive.navigation3)
-
-    // Firebase
-    implementation(platform(libs.firebase.bom))
-    implementation(libs.firebase.analytics)
-    implementation(libs.firebase.crashlytics)
 
     // DataStore
     implementation(libs.androidx.datastore.preferences)

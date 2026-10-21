@@ -1,0 +1,45 @@
+package me.rerere.rikkahub.data.model
+
+import kotlinx.serialization.Serializable
+import kotlin.uuid.Uuid
+
+/** Global opt-in. Disabling this bypasses all enhanced context projection and tools. */
+@Serializable
+data class ContextManagementSettings(
+    val enabled: Boolean = false,
+    val autoCompress: Boolean = true,
+    val triggerPercent: Int = 80,
+    // Zero means adapt to the selected model's window.
+    val recentTokens: Int = 0,
+    val summaryTokens: Int = 0,
+    val summaryModelId: Uuid? = null,
+    val historyTools: Boolean = true,
+    val recallTokens: Int = 4096,
+) {
+    fun normalized() = copy(
+        triggerPercent = triggerPercent.coerceIn(50, 95),
+        recentTokens = recentTokens.coerceIn(0, 1_000_000),
+        summaryTokens = summaryTokens.coerceIn(0, 32_768),
+        recallTokens = recallTokens.coerceIn(256, 32_768),
+    )
+}
+
+/** References original message parts, never copies or replaces the conversation transcript. */
+@Serializable
+data class ContextSource(
+    val messageId: String,
+    val fromPart: Int,
+    val toPart: Int,
+    val fingerprint: String,
+)
+
+@Serializable
+data class ContextSummary(
+    val id: String = Uuid.random().toString(),
+    val conversationId: String,
+    val text: String,
+    val sources: List<ContextSource>,
+    val createdAt: Long = System.currentTimeMillis(),
+    val tokensBefore: Int,
+    val tokensAfter: Int,
+)

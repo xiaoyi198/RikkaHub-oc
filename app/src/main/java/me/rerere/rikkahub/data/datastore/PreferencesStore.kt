@@ -106,6 +106,7 @@ class SettingsStore internal constructor(
         val CUSTOM_THEMES = stringPreferencesKey("custom_themes")
         val DISPLAY_SETTING = stringPreferencesKey("display_setting")
         val NETWORK_SETTING = stringPreferencesKey("network_setting")
+        val CONTEXT_MANAGEMENT = stringPreferencesKey("context_management")
         val DEVELOPER_MODE = booleanPreferencesKey("developer_mode")
 
         // 模型选择

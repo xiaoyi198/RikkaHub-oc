@@ -1,8 +1,5 @@
 package me.rerere.rikkahub.di
 
-import com.google.firebase.Firebase
-import com.google.firebase.analytics.analytics
-import com.google.firebase.crashlytics.crashlytics
 import kotlinx.serialization.json.Json
 import me.rerere.rikkahub.AppScope
 import me.rerere.rikkahub.data.ai.ChatRequestFactory
@@ -17,7 +14,6 @@ import me.rerere.rikkahub.utils.EmojiData
 import me.rerere.rikkahub.utils.EmojiUtils
 import me.rerere.rikkahub.utils.JsonInstant
 import me.rerere.rikkahub.utils.SoundEffectPlayer
-import me.rerere.rikkahub.utils.UpdateChecker
 import me.rerere.rikkahub.web.WebServerManager
 import me.rerere.tts.provider.TTSManager
 import org.koin.dsl.module
@@ -34,13 +30,6 @@ val appModule = module {
     }
 
     single {
-        UpdateChecker(
-            client = get(),
-            appScope = get(),
-        )
-    }
-
-    single {
         AppScope()
     }
 
@@ -50,14 +39,6 @@ val appModule = module {
 
     single {
         TTSManager(get())
-    }
-
-    single {
-        Firebase.crashlytics
-    }
-
-    single {
-        Firebase.analytics
     }
 
     single {
@@ -100,6 +81,7 @@ val appModule = module {
             memoryRepository = get(),
             templateTransformer = get(),
             workspaceRepository = get(),
+            contextSummaryRepository = get(),
         )
     }
 

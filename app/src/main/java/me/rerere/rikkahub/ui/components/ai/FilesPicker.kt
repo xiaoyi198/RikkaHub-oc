@@ -123,6 +123,7 @@ internal fun FilesPicker(
     }
     val showCwd = boundWorkspace != null && boundWorkspace.shellStatus == WorkspaceShellStatus.READY.name
     var showCwdSheet by remember { mutableStateOf(false) }
+    var showContextDetails by remember { mutableStateOf(false) }
 
     var page by remember { mutableStateOf(FilesPickerPage.MAIN) }
     // 在子页面时，返回键回到主页面而不是关闭 sheet
@@ -186,8 +187,9 @@ internal fun FilesPicker(
                 val showWorkspace = workspaces.isNotEmpty()
                 val showMcp = settings.mcpServers.isNotEmpty()
                 // 限制了上下文消息数就是滚动上下文，旧消息会自动移出，不需要压缩
-                val showCompress = assistant.contextMessageLimit <= 0
-                val itemCount = 1 + listOf(showWorkspace, showWorkspace && showCwd, showMcp, showCompress).count { it }
+                val showCompress = settings.contextManagement.enabled || assistant.contextMessageLimit <= 0
+                val showContext = settings.contextManagement.enabled
+                val itemCount = 1 + listOf(showWorkspace, showWorkspace && showCwd, showMcp, showCompress, showContext).count { it }
                 var itemIndex = 0
                 Column(
                     verticalArrangement = Arrangement.spacedBy(ListItemDefaults.SegmentedGap),
@@ -301,7 +303,8 @@ internal fun FilesPicker(
                                         }
                                         if (contextTokens != null && contextLength != null) {
                                             Text(
-                                                text = "${contextTokens.formatNumber()} / ${contextLength.formatNumber()}",
+                                                text = (if (settings.contextManagement.enabled) "上次请求 " else "") +
+                                                    "${contextTokens.formatNumber()} / ${contextLength.formatNumber()}",
                                                 style = MaterialTheme.typography.labelSmall,
                                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                             )
@@ -314,6 +317,15 @@ internal fun FilesPicker(
                             },
                         ) {
                             Text(stringResource(R.string.chat_page_compress_context))
+                        }
+                    }
+                    if (showContext) {
+                        SegmentedListItem(
+                            onClick = { showContextDetails = true },
+                            shapes = ListItemDefaults.segmentedShapes(index = itemIndex++, count = itemCount),
+                            leadingContent = { Icon(HugeIcons.Package, contentDescription = null) },
+                        ) {
+                            Text("查看上下文摘要")
                         }
                     }
                 }
@@ -338,7 +350,18 @@ internal fun FilesPicker(
         CompressContextDialog(onDismiss = {
             onShowCompressDialogChange(false)
             onDismiss()
-        }, onConfirm = onCompressContext)
+        }, onConfirm = onCompressContext, enhanced = settings.contextManagement.enabled)
+    }
+    if (showContextDetails && settings.contextManagement.enabled) {
+        ContextSummarySheet(
+            conversation = conversation,
+            onDismiss = { showContextDetails = false },
+            onSettings = {
+                showContextDetails = false
+                onDismiss()
+                navController.navigate(Screen.SettingContext)
+            },
+        )
     }
 }
 

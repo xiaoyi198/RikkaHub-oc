@@ -226,6 +226,12 @@ fun SettingPage(vm: SettingVM = koinViewModel()) {
                         headlineContent = { Text(stringResource(R.string.setting_page_default_model)) },
                     )
                     item(
+                        onClick = { navController.navigate(Screen.SettingContext) },
+                        leadingContent = { CardGroupIcon(HugeIcons.Database02, containerColor = containerColor, contentColor = contentColor) },
+                        supportingContent = { Text(if (settings.contextManagement.enabled) "增强策略已启用 · 自动压缩与历史回查" else "原有策略 · 可配置自动压缩与历史回查") },
+                        headlineContent = { Text("上下文管理") },
+                    )
+                    item(
                         onClick = { navController.navigate(Screen.SettingProvider) },
                         leadingContent = { CardGroupIcon(HugeIcons.Brain02, containerColor = containerColor, contentColor = contentColor) },
                         supportingContent = { Text(stringResource(R.string.setting_page_providers_desc)) },

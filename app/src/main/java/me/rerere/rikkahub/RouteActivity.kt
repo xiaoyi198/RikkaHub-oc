@@ -131,6 +131,7 @@ import me.rerere.rikkahub.ui.pages.setting.SettingSearchPage
 import me.rerere.rikkahub.ui.pages.setting.SettingMediaPage
 import me.rerere.rikkahub.ui.pages.setting.SettingSpeechPage
 import me.rerere.rikkahub.ui.pages.setting.SettingWebPage
+import me.rerere.rikkahub.ui.pages.setting.SettingContextPage
 import me.rerere.rikkahub.ui.pages.share.handler.ShareHandlerPage
 import me.rerere.rikkahub.ui.pages.stats.StatsPage
 import me.rerere.rikkahub.ui.pages.translator.TranslatorPage
@@ -481,6 +482,10 @@ class RouteActivity : ComponentActivity() {
                                 SettingModelPage()
                             }
 
+                            entry<Screen.SettingContext> {
+                                SettingContextPage()
+                            }
+
                             entry<Screen.SettingAbout> {
                                 SettingAboutPage()
                             }
@@ -734,6 +739,9 @@ sealed interface Screen : NavKey {
 
     @Serializable
     data object SettingModels : Screen
+
+    @Serializable
+    data object SettingContext : Screen
 
     @Serializable
     data object SettingAbout : Screen

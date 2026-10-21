@@ -66,6 +66,7 @@ internal val SETTINGS_FIELDS: List<SettingsField<*, *>> = with(SettingsStore) {
         json(CUSTOM_THEMES, Settings::customThemes) { copy(customThemes = it) },
         json(DISPLAY_SETTING, Settings::displaySetting) { copy(displaySetting = it) },
         json(NETWORK_SETTING, Settings::networkSetting) { copy(networkSetting = it) },
+        json(CONTEXT_MANAGEMENT, Settings::contextManagement) { copy(contextManagement = it) },
         plain(DEVELOPER_MODE, Settings::developerMode) { copy(developerMode = it) },
 
         // 模型选择

@@ -12,6 +12,7 @@ import me.rerere.rikkahub.data.db.migrations.Migration_15_16
 import me.rerere.rikkahub.data.db.migrations.Migration_27_28
 import me.rerere.rikkahub.data.db.migrations.Migration_30_31
 import me.rerere.rikkahub.data.db.migrations.Migration_6_7
+import me.rerere.rikkahub.data.db.migrations.Migration_32_33
 
 /** Shared schema, migrations and extensions for the app and staged backup validation. */
 internal object AppDatabaseFactory {
@@ -26,6 +27,7 @@ internal object AppDatabaseFactory {
                 Migration_15_16,
                 Migration_27_28,
                 Migration_30_31,
+                Migration_32_33,
             )
             .addCallback(object : RoomDatabase.Callback() {
                 override fun onOpen(db: SupportSQLiteDatabase) {
@@ -55,6 +57,15 @@ internal object AppDatabaseFactory {
                             tokenize = 'simple'
                         )
                         """.trimIndent()
+                    )
+                    // Full text and tool results for enhanced context recall; populated only on opt-in.
+                    db.execSQL(
+                        "CREATE VIRTUAL TABLE IF NOT EXISTS context_history_fts USING fts5(" +
+                            "text, message_id UNINDEXED, conversation_id UNINDEXED, fingerprint UNINDEXED, tokenize = 'simple')"
+                    )
+                    db.execSQL(
+                        "CREATE TRIGGER IF NOT EXISTS delete_context_history AFTER DELETE ON ConversationEntity " +
+                            "BEGIN DELETE FROM context_history_fts WHERE conversation_id = OLD.id; END"
                     )
                 }
             })

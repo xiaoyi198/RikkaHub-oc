@@ -80,6 +80,9 @@ internal fun Settings.withoutInvalidReferences(): Settings {
             ?.takeIf { id -> asrProviders.any { provider -> provider.id == id } }
             ?: asrProviders.firstOrNull()?.id,
         favoriteModels = settings.favoriteModels.filter { it in validModelIds },
+        contextManagement = settings.contextManagement.copy(
+            summaryModelId = settings.contextManagement.summaryModelId?.takeIf { it in validModelIds },
+        ),
         modeInjections = settings.modeInjections.distinctBy { it.id },
         lorebooks = settings.lorebooks.distinctBy { it.id },
         quickMessages = settings.quickMessages.distinctBy { it.id },
@@ -88,6 +91,7 @@ internal fun Settings.withoutInvalidReferences(): Settings {
 
 // 把取值收回合法范围，比如删掉搜索服务后选中的下标可能越界
 private fun Settings.withValuesInRange(): Settings = copy(
+    contextManagement = contextManagement.normalized(),
     searchServiceSelected = searchServiceSelected.coerceIn(0, (searchServices.size - 1).coerceAtLeast(0)),
     defaultTTSPlaybackSpeed = defaultTTSPlaybackSpeed.coerceIn(0.5f, 2.0f),
 )

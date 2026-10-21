@@ -51,6 +51,7 @@ class ConversationSession(
     val state: StateFlow<Conversation> = _state.asStateFlow()
     private val initializationMutex = Mutex()
     private val writeMutex = Mutex()
+    internal val contextCompressionMutex = Mutex()
     @Volatile
     var isInitialized = false
         private set

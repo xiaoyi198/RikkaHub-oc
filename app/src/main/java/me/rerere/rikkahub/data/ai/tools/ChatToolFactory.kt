@@ -93,6 +93,8 @@ class ChatToolFactory(
                 )
             }
         }
+        // Enhanced context keeps the original result for history_read and compacts only its request projection.
+        if (settings.contextManagement.enabled) return tools
         // 过长的输出存成文件让模型用 shell 按需读取；没有 shell 时模型读不到文件，只能原样返回。
         // 文件放在本机, 只有本地 Rootfs 挂载了 /tool_outputs, 远程工作区同样读不到
         val canReadToolOutputs = workspaceTools.isNotEmpty() &&

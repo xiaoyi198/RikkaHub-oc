@@ -11,3 +11,7 @@ local.properties
 .cursor
 .history
 .kotlin
+
+# Local signing keys for private builds
+*.jks
+*.keystore

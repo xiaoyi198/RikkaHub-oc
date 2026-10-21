@@ -111,6 +111,7 @@ internal fun AssistantBasicContent(
     onUpdate: (Assistant) -> Unit,
     vm: AssistantDetailVM
 ) {
+    val enhancedContext = me.rerere.rikkahub.ui.context.LocalSettings.current.contextManagement.enabled
     val modelListState = rememberModelListState(
         modelId = assistant.chatModelId,
         providers = providers,
@@ -342,6 +343,9 @@ internal fun AssistantBasicContent(
                 headlineContent = { Text(stringResource(R.string.assistant_page_context_message_limit)) },
                 supportingContent = { Text(stringResource(R.string.assistant_page_context_message_limit_desc)) },
             ) {
+                if (enhancedContext) {
+                    Text("增强上下文管理已启用，此处的条数限制暂不生效。关闭增强策略后恢复。")
+                }
                 var contextMessageLimitInput by remember(
                     assistant.id,
                     assistant.contextMessageLimit

@@ -24,6 +24,7 @@ import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.withLock
 import me.rerere.ai.agent.AgentEvent
 import me.rerere.ai.agent.AgentFinishReason
 import me.rerere.ai.agent.RetryAttempt
@@ -47,6 +48,7 @@ import me.rerere.rikkahub.data.ai.mcp.McpManager
 import me.rerere.rikkahub.data.ai.prompts.buildCompressPrompt
 import me.rerere.rikkahub.data.ai.tools.InvalidMcpServerNamesException
 import me.rerere.rikkahub.data.ai.tools.shouldUseExternalWebSearch
+import me.rerere.rikkahub.data.ai.context.contextSourcesMatch
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.datastore.getCurrentAssistant
 import me.rerere.rikkahub.data.event.AppEvent
@@ -75,6 +77,7 @@ import me.rerere.rikkahub.data.model.withToolApproval
 import me.rerere.rikkahub.data.model.withTranslation
 import me.rerere.rikkahub.data.model.withoutConversationFields
 import me.rerere.rikkahub.data.model.withoutUnresumableToolCalls
+import me.rerere.rikkahub.data.model.ContextSummary
 import me.rerere.rikkahub.data.repository.ConversationRepository
 import me.rerere.rikkahub.data.repository.FolderRepository
 import me.rerere.rikkahub.web.BadRequestException
@@ -606,7 +609,10 @@ class ChatService(
                 else -> Uuid.random()
             }
 
-            val (request, hooks) = requestFactory.createAgent(turn, history, session.processingStatus)
+            val incarnation = session.incarnation
+            val (request, hooks) = requestFactory.createAgent(turn, history, session.processingStatus) { summary ->
+                persistContextSummary(session, summary, incarnation)
+            }
             var finishReason: AgentFinishReason? = null
             try {
                 runAgent(request, hooks).flowOn(Dispatchers.IO).collect { event ->
@@ -804,6 +810,31 @@ class ChatService(
             check(!session.isGenerating) { context.getString(R.string.chat_page_compress_blocked_generating) }
 
             val conversation = session.state.value
+            val settings = settingsStore.awaitLoaded()
+            if (settings.contextManagement.enabled) {
+                session.contextCompressionMutex.withLock {
+                    check(!session.isGenerating) { context.getString(R.string.chat_page_compress_blocked_generating) }
+                    val latest = session.state.value
+                    val incarnation = session.incarnation
+                    val turn = requestFactory.createContext(settings, latest)
+                    try {
+                        requestFactory.compressManagedContext(
+                            turn = turn,
+                            messages = latest.currentMessages,
+                            processingStatus = session.processingStatus,
+                            keepRecentMessages = keepRecentMessages,
+                            additionalPrompt = additionalPrompt,
+                            persistSummary = { summary ->
+                                check(!session.isGenerating) { context.getString(R.string.chat_page_compress_blocked_generating) }
+                                persistContextSummary(session, summary, incarnation)
+                            },
+                        )
+                    } finally {
+                        session.processingStatus.value = null
+                    }
+                }
+                return@withLoadedSession
+            }
             val nodes = conversation.messageNodes
             val checkpointIndex = nodes.indexOfLast { it.currentMessage.isContextCheckpoint }
             // 压缩范围是 (checkpointIndex, endIndex)，之后的节点原样保留
@@ -827,7 +858,7 @@ class ChatService(
             }) { context.getString(R.string.chat_page_compress_handle_pending_tools) }
 
             // 必须和对话用同一个模型、同一套请求组装，才能命中提示词缓存
-            val turn = requestFactory.createContext(settingsStore.awaitLoaded(), conversation)
+            val turn = requestFactory.createContext(settings, conversation)
             val summary = requestFactory.generateCompressionSummary(
                 turn = turn,
                 messages = conversation.currentMessages.take(endIndex),
@@ -849,6 +880,26 @@ class ChatService(
             }
             session.flush()
         }
+    }
+
+    /** Serialize derived-state commits with deletion/restore, validating against the live selected branch. */
+    private suspend fun persistContextSummary(
+        session: ConversationSession,
+        summary: ContextSummary,
+        incarnation: Int,
+    ): Boolean {
+        if (session.incarnation != incarnation || !contextSourcesMatch(session.state.value.currentMessages, summary.sources)) {
+            return false
+        }
+        session.flush()
+        return session.updateMetadata(
+            expectedIncarnation = incarnation,
+            transform = { latest ->
+                check(contextSourcesMatch(latest.currentMessages, summary.sources)) { "对话内容已变化，摘要未应用。" }
+                latest
+            },
+            persist = { requestFactory.saveContextSummary(summary) },
+        ) && contextSourcesMatch(session.state.value.currentMessages, summary.sources)
     }
 
     // ---- 聊天页配置 ----

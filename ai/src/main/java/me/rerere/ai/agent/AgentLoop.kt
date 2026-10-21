@@ -2,6 +2,8 @@ package me.rerere.ai.agent
 
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.FlowCollector
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
 import kotlinx.serialization.json.buildJsonObject
@@ -83,17 +85,26 @@ internal class AgentLoop(
 
     private suspend fun generateStep() {
         val current = message
-        val step = hooks.prepareStep(if (current == null) history else history + current)
+        val messages = if (current == null) history else history + current
+        val step = hooks.prepareStep(messages)
         val params = step.params.copy(tools = request.tools)
         val base = current ?: UIMessage(
             role = MessageRole.ASSISTANT,
             parts = emptyList(),
             modelId = params.model.id,
         )
-        val generated = if (request.stream) {
-            stream(step.messages, params, base)
-        } else {
-            generate(step.messages, params, base)
+        suspend fun generate(requestStep: StepRequest): UIMessage {
+            val requestParams = requestStep.params.copy(tools = request.tools)
+            return if (request.stream) stream(requestStep.messages, requestParams, base)
+            else this@AgentLoop.generate(requestStep.messages, requestParams, base)
+        }
+        val generated = try {
+            generate(step)
+        } catch (error: Throwable) {
+            currentCoroutineContext().ensureActive()
+            if (error is CancellationException) throw error
+            val recovered = hooks.recoverContext(messages, error) ?: throw error
+            generate(recovered)
         }
         update(hooks.finishStep(generated, newPartsFrom = base.parts.size).copy(finishedAt = now()))
     }

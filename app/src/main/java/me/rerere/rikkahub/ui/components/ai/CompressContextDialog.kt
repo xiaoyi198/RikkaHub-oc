@@ -31,7 +31,8 @@ import me.rerere.ui.components.OutlinedNumberInput
 @Composable
 fun CompressContextDialog(
     onDismiss: () -> Unit,
-    onConfirm: (additionalPrompt: String, keepRecentMessages: Int) -> Job
+    onConfirm: (additionalPrompt: String, keepRecentMessages: Int) -> Job,
+    enhanced: Boolean = false,
 ) {
     var additionalPrompt by remember { mutableStateOf("") }
     // 默认全部压缩，请求前缀与对话一致，缓存命中最好
@@ -75,7 +76,9 @@ fun CompressContextDialog(
                         Text(stringResource(R.string.chat_page_compressing))
                     }
                 } else {
-                    Text(stringResource(R.string.chat_page_compress_context_desc))
+                    Text(if (enhanced) {
+                        "将选中的历史分段压缩为独立摘要，原文保留并可回查。保留最近消息数为 0 时，压缩全部可用历史。关闭增强策略后恢复原有上下文。"
+                    } else stringResource(R.string.chat_page_compress_context_desc))
 
                     // Additional context input
                     OutlinedTextField(
