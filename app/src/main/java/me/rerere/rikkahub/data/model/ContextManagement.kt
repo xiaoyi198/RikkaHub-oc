@@ -15,12 +15,19 @@ data class ContextManagementSettings(
     val summaryModelId: Uuid? = null,
     val historyTools: Boolean = true,
     val recallTokens: Int = 4096,
+    val prune: Boolean = false,
+    val pruneProtectTokens: Int = 0,
+    val pruneMinimumTokens: Int = 0,
+    val pruneProtectedTools: List<String> = emptyList(),
 ) {
     fun normalized() = copy(
         triggerPercent = triggerPercent.coerceIn(50, 95),
         recentTokens = recentTokens.coerceIn(0, 1_000_000),
         summaryTokens = summaryTokens.coerceIn(0, 32_768),
         recallTokens = recallTokens.coerceIn(256, 32_768),
+        pruneProtectTokens = pruneProtectTokens.coerceIn(0, 1_000_000),
+        pruneMinimumTokens = pruneMinimumTokens.coerceIn(0, 1_000_000),
+        pruneProtectedTools = pruneProtectedTools.map(String::trim).filter(String::isNotEmpty).distinct(),
     )
 }
 

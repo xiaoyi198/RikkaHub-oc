@@ -9,6 +9,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import me.rerere.ai.core.InputSchema
 import me.rerere.ai.core.Tool
+import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.data.ai.context.ContextHistory
 import me.rerere.rikkahub.data.ai.context.contextFingerprint
@@ -80,7 +81,10 @@ fun createContextHistoryTools(
                         })
                     }
                 })
-                put("hint", "Use history_read(id, offset) to read the original text. No matches does not mean the fact never existed; try other keywords.")
+                put(
+                    "hint",
+                    "Use history_read(id, offset) to read the original text. No matches does not mean the fact never existed; try other keywords."
+                )
             }
             listOf(UIMessagePart.Text(result.toString()))
         },
@@ -89,7 +93,8 @@ fun createContextHistoryTools(
         name = "history_read",
         description = """
             Read an original message, or expand a summary into its original source messages and tool results.
-            Accepts IDs from history_search or [Conversation history summary: ...].
+            Accepts IDs from history_search, history summaries, or pruned tool result markers.
+            Set tool_call_id to read just that original tool invocation and output instead of the whole message.
             Only the current selected branch is accessible. Results are paginated by character offset;
             follow next_offset when truncated. Documents include extracted text. To view an original
             image, set include_image=true and image_offset (default 0); one image is returned at a time.
@@ -98,6 +103,10 @@ fun createContextHistoryTools(
             InputSchema.Obj(
                 properties = buildJsonObject {
                     put("id", historyProperty("string", "Message or summary ID"))
+                    put(
+                        "tool_call_id",
+                        historyProperty("string", "Optional exact tool call ID from a pruned result marker")
+                    )
                     put("offset", historyProperty("integer", "Character offset, default 0"))
                     put("max_tokens", historyProperty("integer", "Optional smaller return budget"))
                     put("include_image", historyProperty("boolean"))
@@ -113,7 +122,9 @@ fun createContextHistoryTools(
             val budget = (args["max_tokens"]?.jsonPrimitive?.intOrNull ?: maxRecallTokens).coerceIn(64, maxRecallTokens)
             val messages = history.messages
             val message = messages.firstOrNull { it.id.toString() == id }
-            val originals = if (message != null) listOf(message) else {
+            val sources = if (message != null) {
+                listOf(message)
+            } else {
                 val summary = repository.getAll(conversationId).firstOrNull { it.id == id }
                     ?.takeIf { contextSourcesMatch(messages, it.sources) }
                     ?: error("Source not found on the current branch. Search again.")
@@ -123,6 +134,8 @@ fun createContextHistoryTools(
                     original.copy(parts = original.parts.subList(source.fromPart, source.toPart))
                 }
             }
+            val toolCallId = args["tool_call_id"]?.jsonPrimitive?.contentOrNull
+            val originals = if (toolCallId == null) sources else contextHistoryToolSource(sources, toolCallId)
             val text = originals.joinToString("\n\n") {
                 contextTranscript(it, DocumentAsPromptTransformer::readDocumentContent)
             }
@@ -136,6 +149,7 @@ fun createContextHistoryTools(
             val end = start + page.length
             val result = buildJsonObject {
                 put("id", id)
+                if (toolCallId != null) put("tool_call_id", toolCallId)
                 put("offset", start)
                 put("total_characters", text.length)
                 put("text", page)
@@ -149,6 +163,16 @@ fun createContextHistoryTools(
         },
     ),
 )
+
+/** Scope a recall page to one exact call, including calls inside an expanded summary. */
+internal fun contextHistoryToolSource(messages: List<UIMessage>, toolCallId: String): List<UIMessage> {
+    require(toolCallId.isNotBlank()) { "tool_call_id must not be blank" }
+    val matches = messages.flatMap { message ->
+        message.getTools().filter { it.toolCallId == toolCallId }.map { message.copy(parts = listOf(it)) }
+    }
+    require(matches.size == 1) { "Tool call not found uniquely in this source on the current branch. Search again." }
+    return matches
+}
 
 private fun historyProperty(type: String, description: String? = null) = buildJsonObject {
     put("type", type)

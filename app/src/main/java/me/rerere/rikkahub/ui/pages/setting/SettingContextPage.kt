@@ -77,13 +77,88 @@ fun SettingContextPage(vm: SettingVM = koinViewModel()) {
                 }
             }
             item {
+                CardGroup(title = { Text("工具结果裁剪（Prune）") }) {
+                    switchItem(
+                        checked = config.prune,
+                        enabled = config.enabled,
+                        onCheckedChange = { value -> update { it.copy(prune = value) } },
+                        headlineContent = { Text("裁剪较早的工具结果") },
+                        supportingContent = { Text("默认关闭。先批量裁剪旧文本结果，预算仍不足时再摘要；不调用模型、不改写原文。需要开启历史回查，并使用支持工具调用的模型。") },
+                    )
+                    item(
+                        headlineContent = { Text("保护近期结果与指令") },
+                        supportingContent = {
+                            Text(
+                                "保留最近两轮用户对话、技能、用户回答和媒体结果。长工具循环中，仅裁剪模型已读过的较早结果，最新一批完整保留。裁剪独立于自动摘要开关。"
+                            )
+                        },
+                    )
+                    formItem(
+                        headlineContent = { Text("额外保留的工具结果预算") },
+                        supportingContent = {
+                            Text(
+                                "在上述保护范围外，再保留一段近期工具结果。0 为自动：可用输入预算的 40%，最多 40,000 tokens；手动设置不超过输入预算的一半。"
+                            )
+                        },
+                    ) {
+                        ContextTokenField(
+                            config.pruneProtectTokens,
+                            config.enabled && config.prune,
+                            0..1_000_000
+                        ) { value ->
+                            update { it.copy(pruneProtectTokens = value) }
+                        }
+                    }
+                    formItem(
+                        headlineContent = { Text("单批最少释放量") },
+                        supportingContent = {
+                            Text(
+                                "达到此净节省量才裁剪，避免频繁改动请求前缀。0 为自动：可用输入预算的 20%，最多 20,000 tokens；手动设置也受窗口限制。"
+                            )
+                        },
+                    ) {
+                        ContextTokenField(
+                            config.pruneMinimumTokens,
+                            config.enabled && config.prune,
+                            0..1_000_000
+                        ) { value ->
+                            update { it.copy(pruneMinimumTokens = value) }
+                        }
+                    }
+                    formItem(
+                        headlineContent = { Text("额外保护的工具名称") },
+                        supportingContent = { Text("填写完整名称，每行一个或用逗号分隔。skill、use_skill、ask_user 始终保护。") },
+                    ) {
+                        var draft by remember(config.pruneProtectedTools) {
+                            mutableStateOf(config.pruneProtectedTools.joinToString("\n"))
+                        }
+                        OutlinedTextField(
+                            value = draft,
+                            onValueChange = { input ->
+                                draft = input
+                                val names = input.split(
+                                    '\n',
+                                    ',',
+                                    '，'
+                                ).map(String::trim).filter(String::isNotEmpty).distinct()
+                                update { it.copy(pruneProtectedTools = names) }
+                            },
+                            enabled = config.enabled && config.prune,
+                            modifier = Modifier.fillMaxWidth(),
+                            label = { Text("工具名称") },
+                            minLines = 2,
+                        )
+                    }
+                }
+            }
+            item {
                 CardGroup(title = { Text("压缩时机与预算") }) {
                     switchItem(
                         checked = config.autoCompress,
                         enabled = config.enabled,
                         onCheckedChange = { value -> update { it.copy(autoCompress = value) } },
                         headlineContent = { Text("自动压缩") },
-                        supportingContent = { Text("在新请求和多轮工具调用之间检查预算；关闭后可手动压缩。") },
+                        supportingContent = { Text("在新请求和多轮工具调用之间检查预算；启用 Prune 时先裁剪再摘要。关闭此项后仍可单独使用 Prune 或手动压缩。") },
                     )
                     formItem(
                         headlineContent = { Text("压缩触发比例") },
@@ -141,7 +216,11 @@ fun SettingContextPage(vm: SettingVM = koinViewModel()) {
                         enabled = config.enabled,
                         onCheckedChange = { value -> update { it.copy(historyTools = value) } },
                         headlineContent = { Text("允许模型查找历史原文") },
-                        supportingContent = { Text("提供 history_search / history_read，只访问当前对话的选中分支，包含工具结果。需要聊天模型支持工具调用。") },
+                        supportingContent = {
+                            Text(
+                                "提供 history_search / history_read，只访问当前对话的选中分支，包含工具结果。需要聊天模型支持工具调用。"
+                            )
+                        },
                     )
                     formItem(
                         headlineContent = { Text("单次回查返回预算") },

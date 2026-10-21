@@ -1,6 +1,6 @@
 # RikkaHub 自用包编译便签
 
-已完成签名 release 构建、36 项相关 JVM 测试和 release 必要 Lint 检查。三个 APK 的包名、版本号和签名均已验证，尚未在手机上验证覆盖安装。
+已完成包含 Prune 的签名 release 构建、29 项上下文 JVM 测试和 release 必要 Lint 检查。三个 APK 的包名、版本号和签名均已验证，尚未在手机上验证覆盖安装。
 
 ## 安装身份
 
@@ -9,11 +9,11 @@
 ```kotlin
 applicationId = "me.rerere.rikkahub.oc"
 namespace = "me.rerere.rikkahub"
-versionCode = 194
-versionName = "3.1.0-oc.1"
+versionCode = 195
+versionName = "3.1.0-oc.2"
 ```
 
-覆盖安装要求应用 ID 与已安装包一致，签名与旧包兼容，版本号不能低于已安装版本。日常升级请递增 `versionCode`；194 只是在旧包不高于 194 时适用，不能仅凭旧便签认定手机仍是 193。`versionName` 不决定能否覆盖安装。
+覆盖安装要求应用 ID 与已安装包一致，签名与旧包兼容，版本号不能低于已安装版本。日常升级请递增 `versionCode`；当前版本 195 可升级此前分发的 194，但仍需以手机实际安装版本为准。`versionName` 不决定能否覆盖安装。
 
 必须构建 `release`。本项目 `debug` 有 `.debug` 后缀，使用调试签名，不能覆盖这个自用包。保留 `namespace`，不批量改 Kotlin 包名；Manifest 中的文件和文档 Provider authority 已使用 `${applicationId}`，会跟随应用 ID。
 
@@ -95,8 +95,12 @@ adb install -r app/build/outputs/apk/release/app-arm64-v8a-release.apk
 
 首次验证应检查旧会话、助手、模型设置、附件和工作区能否正常读取，再分别验证增强上下文关闭和开启时的聊天。当前这些设备检查尚未执行。
 
-## 本次构建验证记录
+## 构建验证记录
 
 2026-10-21 构建成功：应用 ID `me.rerere.rikkahub.oc`，版本 `3.1.0-oc.1` / `194`。ARM64、x86_64 和 universal APK 均通过 `aapt2` 安装信息检查及 `apksigner verify --verbose --print-certs` 验证，证书指纹与上文一致。各 APK 的文件 SHA-256、大小和签名验证结果保存在产物目录的 `verification.json` 中。
 
 相关测试全部通过：`AgentLoopTest` 22 项、`ContextProjectionTest` 7 项、`ManagedContextTest` 7 项。Room 生成的 schema 33 与 schema 32 对比只增加 `context_summary`，已有表未变，迁移 SQL 已用 SQLite 验证。
+
+2026-10-21 Prune 试用版构建成功：版本 `3.1.0-oc.2` / `195`，沿用相同应用 ID 和签名，Prune 不新增数据库迁移。ARM64、x86_64 和 universal APK 均通过包名、版本号与签名检查，release 必要 Lint 检查通过。上下文 JVM 测试 29 项全部通过：`ContextProjectionTest` 7 项、`ContextPruningTest` 11 项、`ManagedContextTest` 11 项。
+
+便于试用的重命名 APK、`verification.json`、`SHA256SUMS.txt` 和试用说明位于 `app/build/outputs/distribution/3.1.0-oc.2/`。ARM64 文件名为 `RikkaHub-OC-3.1.0-oc.2-prune-arm64-v8a.apk`，SHA-256：`46f07a2f25b1e60c3043ccf9fb5c367133971504000ecfe2cc5316176cd40641`。

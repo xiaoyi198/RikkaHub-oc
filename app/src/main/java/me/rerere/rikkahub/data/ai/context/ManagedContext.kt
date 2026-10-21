@@ -9,6 +9,7 @@ import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.ai.ui.limitContext
 import me.rerere.rikkahub.data.model.ContextManagementSettings
+import me.rerere.rikkahub.data.model.ContextSource
 import me.rerere.rikkahub.data.model.ContextSummary
 import kotlin.math.ceil
 
@@ -44,6 +45,7 @@ class ManagedContext(
     private var lastEstimate = 0
     private var latestGeneratedMessageId: String? = null
     private var latestGeneratedFrom = 0
+    private var prunedSources: Set<ContextSource> = emptySet()
 
     fun recordUsage(message: UIMessage, newPartsFrom: Int) {
         latestGeneratedMessageId = message.id.toString()
@@ -70,7 +72,23 @@ class ManagedContext(
         var attempts = 0
         while (true) {
             val items = projectContext(units, checkNotNull(summaries), recallAvailable)
-            val step = build(items.map { it.message })
+            val pruned = pruneContext(
+                items,
+                messages,
+                settings,
+                budget.input,
+                recallAvailable,
+                latestGeneratedMessageId,
+                latestGeneratedFrom,
+            )
+            if (pruned.sources != prunedSources) {
+                measuredFactor = 1.0
+                prunedSources = pruned.sources
+                if (pruned.toolCount > 0) {
+                    status.value = "已裁剪 ${pruned.toolCount} 个旧工具结果，约释放 ${pruned.tokensSaved} tokens"
+                }
+            }
+            val step = build(pruned.items.map { it.message })
             val estimated = estimateStep(step)
             val tailStart = tailStart(items, budget.recent, keepRecentMessages)
             val firstRaw = items.take(tailStart).indexOfFirst { it.summary == null }
@@ -93,7 +111,9 @@ class ManagedContext(
                 if (candidate.isNotEmpty() && candidateTokens + size > chunkBudget &&
                     candidateTokens >= 256 &&
                     (candidate.size > 1 || candidate.first().summary == null)
-                ) break
+                ) {
+                    break
+                }
                 candidate.add(item)
                 candidateTokens += size
             }
@@ -101,14 +121,16 @@ class ManagedContext(
             check(candidate.none { item -> item.message.getTools().any { !it.isExecuted } }) {
                 "请先处理尚未完成的工具调用，再压缩相关历史。"
             }
-            status.value = "正在压缩上下文（估算 ${estimated} tokens）…"
-            // Summarize the actual input projection, including extracted document text and OCR.
+            status.value = "正在压缩上下文（估算 $estimated tokens）…"
+            // Summarize the unpruned projection so archived observations are not lost from summaries.
+            // Build still includes extracted document text and OCR.
             val preparedCandidate = build(candidate.map { it.message }).messages
                 .filterNot { it.role == me.rerere.ai.core.MessageRole.SYSTEM }
             val transcript = preparedCandidate.joinToString("\n\n") { contextTranscript(it) }
             val actualCandidateTokens = preparedCandidate.sumOf(::estimateContextMessage)
             val text = summarize(
-                transcript + if (additionalPrompt.isBlank()) "" else "\n\nAdditional user instructions: $additionalPrompt",
+                transcript +
+                    if (additionalPrompt.isBlank()) "" else "\n\nAdditional user instructions: $additionalPrompt",
                 budget.summary,
             ).trim()
             check(text.isNotBlank()) { "压缩模型返回了空摘要。" }
@@ -141,17 +163,24 @@ class ManagedContext(
         if (keepMessages != null) {
             if (keepMessages <= 0) return items.size
             val ids = history.messages.takeLast(keepMessages).mapTo(HashSet()) { it.id.toString() }
-            return items.indexOfFirst { item -> item.sources.any { it.messageId in ids } }.takeIf { it >= 0 } ?: items.size
+            return items.indexOfFirst { item -> item.sources.any { it.messageId in ids } }.takeIf { it >= 0 }
+                ?: items.size
         }
         if (items.isEmpty()) return 0
         val current = history.messages.lastOrNull()?.takeIf { it.role == MessageRole.ASSISTANT }
         val freshFrom = if (current?.id.toString() == latestGeneratedMessageId) latestGeneratedFrom else 0
-        val protectedMedia = if (current == null) null else items.indexOfFirst { item ->
-            item.sources.any { it.messageId == current.id.toString() && it.toPart > freshFrom } &&
-                item.message.getTools().any { tool -> tool.output.any {
-                    it is UIMessagePart.Image || it is UIMessagePart.Video || it is UIMessagePart.Audio
-                } }
-        }.takeIf { it >= 0 }
+        val protectedMedia = if (current == null) {
+            null
+        } else {
+            items.indexOfFirst { item ->
+                item.sources.any { it.messageId == current.id.toString() && it.toPart > freshFrom } &&
+                    item.message.getTools().any { tool ->
+                        tool.output.any {
+                            it is UIMessagePart.Image || it is UIMessagePart.Video || it is UIMessagePart.Audio
+                        }
+                    }
+            }.takeIf { it >= 0 }
+        }
         var index = items.lastIndex
         var total = estimateContextMessage(items[index].message)
         // One enormous completed tool result must be compressible even when it is the newest item.
@@ -183,9 +212,14 @@ fun isContextOverflow(error: Throwable): Boolean {
     return generateSequence(error) { it.cause }.take(8).any {
         val text = it.message.orEmpty().lowercase()
         listOf(
-            "context_length_exceeded", "context_window_exceeded", "maximum context length",
-            "prompt is too long", "input is too long", "exceeds the context window",
-            "exceeds the maximum number of tokens", "input token count exceeds",
+            "context_length_exceeded",
+            "context_window_exceeded",
+            "maximum context length",
+            "prompt is too long",
+            "input is too long",
+            "exceeds the context window",
+            "exceeds the maximum number of tokens",
+            "input token count exceeds",
         ).any(text::contains)
     }
 }
