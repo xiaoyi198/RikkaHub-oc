@@ -56,6 +56,6 @@
 
 ## 上游与许可
 
-原项目由 RikkaHub 上游作者和贡献者开发，本 fork 的修改建立在其工作之上。原版内容请以 [官方仓库](https://github.com/rikkahub/rikkahub) 为准；本 fork 的问题请在 [本仓库 Issues](https://github.com/xiaoyi198/rikkahub/issues) 反馈。
+原项目由 RikkaHub 上游作者和贡献者开发，本 fork 的修改建立在其工作之上。原版内容请以 [官方仓库](https://github.com/rikkahub/rikkahub) 为准；本 fork 的问题请在 [本仓库 Issues](https://github.com/xiaoyi198/RikkaHub-oc/issues) 反馈。
 
 本项目沿用 [AGPL-3.0 许可证](LICENSE)。
