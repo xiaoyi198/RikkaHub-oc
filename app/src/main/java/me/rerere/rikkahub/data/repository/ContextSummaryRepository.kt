@@ -11,6 +11,7 @@ import me.rerere.rikkahub.data.ai.context.contextTranscript
 import me.rerere.rikkahub.data.ai.transformers.DocumentAsPromptTransformer
 import me.rerere.rikkahub.data.db.AppDatabase
 import me.rerere.rikkahub.data.db.entity.ContextSummaryEntity
+import me.rerere.rikkahub.data.db.fts.buildFtsMatchQuery
 import me.rerere.rikkahub.data.model.ContextSummary
 import me.rerere.rikkahub.utils.JsonInstant
 import kotlin.uuid.Uuid
@@ -61,10 +62,16 @@ class ContextSummaryRepository(private val database: AppDatabase) : ContextSumma
 
     suspend fun search(conversationId: String, query: String, limit: Int): List<HistoryMatch> = withContext(Dispatchers.IO) {
         val results = mutableListOf<HistoryMatch>()
-        database.openHelper.readableDatabase.query(
+        val db = database.openHelper.readableDatabase
+        val matchQuery = buildFtsMatchQuery(query) { text ->
+            db.query("SELECT simple_query(?)", arrayOf(text)).use {
+                if (it.moveToFirst()) it.getString(0).orEmpty() else ""
+            }
+        } ?: return@withContext results
+        db.query(
             "SELECT message_id, fingerprint, simple_snippet(context_history_fts, 0, '', '', '…', 48) " +
-                "FROM context_history_fts WHERE text MATCH jieba_query(?) AND conversation_id = ? ORDER BY rank LIMIT ?",
-            arrayOf<Any>(query, conversationId, limit.coerceIn(1, 20)),
+                "FROM context_history_fts WHERE text MATCH ? AND conversation_id = ? ORDER BY rank LIMIT ?",
+            arrayOf<Any>(matchQuery, conversationId, limit.coerceIn(1, 20)),
         ).use { cursor ->
             while (cursor.moveToNext()) results.add(HistoryMatch(cursor.getString(0), cursor.getString(1), cursor.getString(2)))
         }

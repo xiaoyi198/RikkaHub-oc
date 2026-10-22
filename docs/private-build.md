@@ -1,5 +1,7 @@
 # RikkaHub 自用包编译便签
 
+2026-10-23 同步上游后，APK 构建使用 `github` 渠道，以下命令和产物路径已更新。本次同步未运行编译或测试，下方验证记录属于此前构建。
+
 已完成包含 Prune 的签名 release 构建、29 项上下文 JVM 测试和 release 必要 Lint 检查。三个 APK 的包名、版本号和签名均已验证，尚未在手机上验证覆盖安装。
 
 ## 安装身份
@@ -9,11 +11,11 @@
 ```kotlin
 applicationId = "me.rerere.rikkahub.oc"
 namespace = "me.rerere.rikkahub"
-versionCode = 195
-versionName = "3.1.0-oc.2"
+versionCode = 196
+versionName = "3.1.0-oc.3"
 ```
 
-覆盖安装要求应用 ID 与已安装包一致，签名与旧包兼容，版本号不能低于已安装版本。日常升级请递增 `versionCode`；当前版本 195 可升级此前分发的 194，但仍需以手机实际安装版本为准。`versionName` 不决定能否覆盖安装。
+覆盖安装要求应用 ID 与已安装包一致，签名与旧包兼容，版本号不能低于已安装版本。日常升级请递增 `versionCode`；当前版本 196 可升级此前分发的 194、195，但仍需以手机实际安装版本为准。`versionName` 不决定能否覆盖安装。
 
 必须构建 `release`。本项目 `debug` 有 `.debug` 后缀，使用调试签名，不能覆盖这个自用包。保留 `namespace`，不批量改 Kotlin 包名；Manifest 中的文件和文档 Provider authority 已使用 `${applicationId}`，会跟随应用 ID。
 
@@ -60,24 +62,24 @@ cd ..
 克隆时还需要初始化 `material3/material-color-utilities` 子模块。工具链准备好后，在项目根目录构建：
 
 ```bash
-./gradlew --no-daemon :app:assembleRelease
+./gradlew --no-daemon :app:assembleGithubRelease
 ```
 
-本机也已有 `.devtools/build.sh`，可用 `.devtools/build.sh --no-daemon :app:assembleRelease` 激活工作区工具链；无参数时它默认构建 debug，请明确传入 release 任务。
+本机也已有 `.devtools/build.sh`，可用 `.devtools/build.sh --no-daemon :app:assembleGithubRelease` 激活工作区工具链；无参数时它默认构建 debug，请明确传入 release 任务。
 
 常用产物：
 
-- `app/build/outputs/apk/release/app-arm64-v8a-release.apk`：64 位 ARM 手机。
-- `app/build/outputs/apk/release/app-x86_64-release.apk`：x86_64 设备/模拟器。
-- `app/build/outputs/apk/release/app-universal-release.apk`：包含上述两个 ABI。
+- `app/build/outputs/apk/github/release/app-github-arm64-v8a-release.apk`：64 位 ARM 手机。
+- `app/build/outputs/apk/github/release/app-github-x86_64-release.apk`：x86_64 设备/模拟器。
+- `app/build/outputs/apk/github/release/app-github-universal-release.apk`：包含上述两个 ABI。
 
 ## 交付与覆盖安装自检（以后执行）
 
 `aapt2` 和 `apksigner` 位于 Android SDK 的 `build-tools/<版本>/` 中；`adb` 位于 `platform-tools/` 中。把相应目录加入 PATH 或使用绝对路径。
 
 ```bash
-aapt2 dump badging app/build/outputs/apk/release/app-arm64-v8a-release.apk | head -n 2
-apksigner verify --verbose --print-certs app/build/outputs/apk/release/app-arm64-v8a-release.apk
+aapt2 dump badging app/build/outputs/apk/github/release/app-github-arm64-v8a-release.apk | head -n 2
+apksigner verify --verbose --print-certs app/build/outputs/apk/github/release/app-github-arm64-v8a-release.apk
 adb shell dumpsys package me.rerere.rikkahub.oc
 ```
 
@@ -86,12 +88,12 @@ adb shell dumpsys package me.rerere.rikkahub.oc
 先在手机内导出一份应用备份，再覆盖安装：
 
 ```bash
-adb install -r app/build/outputs/apk/release/app-arm64-v8a-release.apk
+adb install -r app/build/outputs/apk/github/release/app-github-arm64-v8a-release.apk
 ```
 
 `INSTALL_FAILED_UPDATE_INCOMPATIBLE` 优先核对已安装包与新包的签名兼容性；应用 ID 不同通常会安装成另一个应用。版本回退还可能出现 `INSTALL_FAILED_VERSION_DOWNGRADE`。不要为了绕过这些错误先卸载，也不要清除应用数据。
 
-覆盖安装成功还需要验证首次启动和数据迁移。本次上下文管理将数据库从 32 升到 33，使用新增摘要表的迁移，不清空原会话。旧自用包若改过数据库结构或使用更高数据库版本，仍需单独核对迁移；包名、签名和版本号正确不能证明数据库兼容。关闭增强上下文开关只恢复请求逻辑，数据库版本仍是 33，不能据此直接降级安装旧 APK。
+覆盖安装成功还需要验证首次启动和数据迁移。此前增强上下文将数据库从 32 升到 33，后台任务再从 33 升到 34，均使用增量迁移，不清空原会话；本次上游同步不新增数据库版本。旧自用包若改过数据库结构或使用更高数据库版本，仍需单独核对迁移；包名、签名和版本号正确不能证明数据库兼容。关闭增强上下文开关只恢复请求逻辑，数据库版本仍是 34，不能据此直接降级安装旧 APK。
 
 首次验证应检查旧会话、助手、模型设置、附件和工作区能否正常读取，再分别验证增强上下文关闭和开启时的聊天。当前这些设备检查尚未执行。
 

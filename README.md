@@ -51,7 +51,7 @@
 准备 Android 工具链、前端依赖和自己的签名配置后，构建 release：
 
 ```bash
-./gradlew --no-daemon :app:assembleRelease
+./gradlew --no-daemon :app:assembleGithubRelease
 ```
 
 环境准备、APK 选择和签名核对步骤见 [编译便签](docs/private-build.md)。不同构建者需要使用自己的签名文件；覆盖安装现有自用包时，必须使用与旧包兼容的签名。
