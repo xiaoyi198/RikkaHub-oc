@@ -640,6 +640,20 @@ export const ChatMessage = React.memo(({
     return <ChatMessageContextCheckpoint message={message} onEdit={onEdit} onDelete={onDelete} />;
   }
 
+  const taskResult = message.parts.find(
+    (part) => typeof part.metadata?.workspaceTaskId === "string",
+  )?.metadata;
+  if (taskResult) {
+    return (
+      <div className="rounded-2xl bg-muted px-3 py-2 text-sm">
+        <p className="font-medium">{String(taskResult.workspaceTaskLabel ?? "后台任务已结束")}</p>
+        <pre className="mt-1 whitespace-pre-wrap break-all text-xs">
+          {String(taskResult.workspaceTaskCommand ?? "")}
+        </pre>
+      </div>
+    );
+  }
+
   return (
     <div
       className={cn("flex flex-col gap-4", isUser ? "items-end" : "items-start")}

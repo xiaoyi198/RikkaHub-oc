@@ -13,15 +13,18 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.intOrNull
@@ -30,13 +33,15 @@ import me.rerere.ai.ui.DiffMetadata
 import me.rerere.ai.ui.metadataAs
 import me.rerere.common.http.jsonObjectOrNull
 import me.rerere.highlight.CodeHighlightText
-import androidx.compose.ui.res.stringResource
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.ComputerTerminal01
 import me.rerere.hugeicons.stroke.FileAdd
 import me.rerere.hugeicons.stroke.FileEdit
 import me.rerere.hugeicons.stroke.FileView
 import me.rerere.rikkahub.R
+import me.rerere.rikkahub.service.WorkspaceTaskManager
+import me.rerere.rikkahub.ui.components.ai.WorkspaceTaskCard
+import me.rerere.rikkahub.ui.components.ai.WorkspaceTaskLog
 import me.rerere.rikkahub.ui.components.richtext.HighlightCodeBlock
 import me.rerere.rikkahub.ui.modifier.shimmer
 import me.rerere.rikkahub.utils.generateUnifiedDiff
@@ -45,6 +50,7 @@ import me.rerere.ui.richtext.DiffAddedColor
 import me.rerere.ui.richtext.DiffRemovedColor
 import me.rerere.ui.richtext.DiffView
 import me.rerere.ui.richtext.parseDiffStats
+import org.koin.compose.koinInject
 
 /**
  * 工作空间编辑文件: 摘要显示增删统计与精简 diff, 详情为完整 diff view
@@ -307,6 +313,12 @@ object ShellToolUI : ToolUIRenderer {
     @Composable
     override fun Summary(context: ToolUIContext) {
         val content = context.content ?: return
+        val manager = koinInject<WorkspaceTaskManager>()
+        val tasks by manager.tasks.collectAsStateWithLifecycle()
+        tasks[content.getStringContent("taskId")]?.let { task ->
+            WorkspaceTaskCard(task, manager)
+            return
+        }
         val combined = remember(content) {
             listOf(content.getStringContent("stdout"), content.getStringContent("stderr"))
                 .filterNot { it.isNullOrBlank() }
@@ -342,6 +354,12 @@ object ShellToolUI : ToolUIRenderer {
         val content = context.content
         if (content == null) {
             DefaultToolPreview(context = context)
+            return
+        }
+        val manager = koinInject<WorkspaceTaskManager>()
+        val tasks by manager.tasks.collectAsStateWithLifecycle()
+        tasks[content.getStringContent("taskId")]?.let { task ->
+            WorkspaceTaskLog(task.id, task.conversationId, manager)
             return
         }
         val command = context.arguments.getStringContent("command").orEmpty()

@@ -36,3 +36,5 @@ target_link_libraries(${CMAKE_PROJECT_NAME}
         # List libraries link to the target library
         android
         log)
+
+target_compile_features(${CMAKE_PROJECT_NAME} PRIVATE cxx_std_17)

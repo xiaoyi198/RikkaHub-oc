@@ -49,12 +49,17 @@ fun contextSourcesMatch(messages: List<UIMessage>, sources: List<ContextSource>)
     return sources.all { source ->
         val message = byId[source.messageId] ?: return@all false
         source.fromPart >= 0 && source.toPart > source.fromPart && source.toPart <= message.parts.size &&
-            contextFingerprint(message.copy(parts = message.parts.subList(source.fromPart, source.toPart))) == source.fingerprint
+            contextFingerprint(message.copy(parts = message.parts.subList(source.fromPart, source.toPart))) ==
+            source.fingerprint
     } && sources.zipWithNext().all { (left, right) ->
         val leftIndex = indices.getValue(left.messageId)
         val rightIndex = indices.getValue(right.messageId)
-        if (leftIndex == rightIndex) left.toPart == right.fromPart else rightIndex == leftIndex + 1 &&
-            left.toPart == messages[leftIndex].parts.size && right.fromPart == 0
+        if (leftIndex == rightIndex) {
+            left.toPart == right.fromPart
+        } else {
+            rightIndex == leftIndex + 1 &&
+                left.toPart == messages[leftIndex].parts.size && right.fromPart == 0
+        }
     }
 }
 
@@ -87,8 +92,17 @@ fun projectContext(
                 message = UIMessage.user(
                     "[Conversation history summary: ${summary.id}]\n${summary.text}\n" +
                         "[Sources: ${summary.sources.first().messageId} … ${summary.sources.last().messageId}." +
-                        (if (recallAvailable) " Use history_read with this summary id to recover omitted details." else "") + "]"
-                ).copy(id = kotlin.uuid.Uuid.parse(summary.id), isSynthetic = true),
+                        (if (recallAvailable) {
+                            " Use history_read with this summary id to recover omitted details."
+                        } else {
+                            ""
+                        }) +
+                        "]"
+                ).copy(
+                    id = kotlin.uuid.Uuid.parse(summary.id),
+                    createdAt = units[index + summary.sources.size - 1].message.createdAt,
+                    isSynthetic = true,
+                ),
                 sources = summary.sources,
                 summary = summary,
             ))
@@ -135,7 +149,9 @@ fun contextTranscript(
                 }
             }
             is UIMessagePart.Reasoning -> Unit
-            is UIMessagePart.Image -> appendLine("[Image: ${part.url.takeUnless { it.startsWith("data:") } ?: "inline image"}]")
+            is UIMessagePart.Image -> appendLine(
+                "[Image: ${part.url.takeUnless { it.startsWith("data:") } ?: "inline image"}]"
+            )
             is UIMessagePart.Document -> {
                 appendLine("[Document: ${part.fileName}, ${part.url}]")
                 readDocument(part)?.let { appendLine(it) }
@@ -147,7 +163,15 @@ fun contextTranscript(
     }
 }
 
-data class ContextBudget(val input: Int, val trigger: Int, val recent: Int, val summary: Int, val output: Int)
+data class ContextBudget(
+    val input: Int,
+    val trigger: Int,
+    val target: Int,
+    val chunk: Int,
+    val recent: Int,
+    val summary: Int,
+    val output: Int,
+)
 
 fun contextBudget(window: Int, maxOutput: Int?, settings: ContextManagementSettings): ContextBudget {
     require(window > 0) { "请先配置模型的上下文容量，再使用增强上下文管理。" }
@@ -157,9 +181,18 @@ fun contextBudget(window: Int, maxOutput: Int?, settings: ContextManagementSetti
     val safety = (window / 20).coerceAtLeast(128).coerceAtMost((window / 4).coerceAtLeast(1))
     val input = (window - output - safety).coerceAtLeast(1)
     val trigger = minOf(input, (window.toLong() * settings.triggerPercent / 100).toInt()).coerceAtLeast(1)
-    val recent = (settings.recentTokens.takeIf { it > 0 } ?: (input / 5).coerceAtMost(20_000))
+    val targetPercent = settings.targetPercent.coerceIn(10, settings.triggerPercent.coerceIn(50, 95) - 5)
+    val target = minOf(
+        (trigger - (window / 20).coerceAtLeast(1)).coerceAtLeast(1),
+        (window.toLong() * targetPercent / 100).toInt()
+    )
+        .coerceAtLeast(1)
+    val chunk = settings.compressionChunkTokens.takeIf { it > 0 }
+        ?.coerceIn(minOf(256, input), input)
+        ?: (input / 3).coerceIn(minOf(256, input), input)
+    val recent = (settings.recentTokens.takeIf { it > 0 } ?: (input / 5))
         .coerceIn(1, (input / 2).coerceAtLeast(1))
-    val summary = (settings.summaryTokens.takeIf { it > 0 } ?: (input / 12).coerceIn(256, 4096))
+    val summary = (settings.summaryTokens.takeIf { it > 0 } ?: (input / 12))
         .coerceIn(1, (input / 4).coerceAtLeast(1))
-    return ContextBudget(input, trigger, recent, summary, output)
+    return ContextBudget(input, trigger, target, chunk, recent, summary, output)
 }

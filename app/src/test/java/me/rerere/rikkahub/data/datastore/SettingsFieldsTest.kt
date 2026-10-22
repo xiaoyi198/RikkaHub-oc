@@ -10,6 +10,7 @@ import me.rerere.asr.ASRProviderSetting
 import me.rerere.mediagen.provider.MediaGenerationProviderSetting
 import me.rerere.rikkahub.data.ai.mcp.McpServerConfig
 import me.rerere.rikkahub.data.model.Assistant
+import me.rerere.rikkahub.data.model.ContextManagementSettings
 import me.rerere.rikkahub.data.model.Lorebook
 import me.rerere.rikkahub.data.model.PromptInjection
 import me.rerere.rikkahub.data.model.QuickMessage
@@ -117,6 +118,7 @@ private val SAMPLE = Settings(
     developerMode = true,
     displaySetting = DisplaySetting(userNickname = "me"),
     networkSetting = NetworkSetting(userAgent = "agent"),
+    contextManagement = ContextManagementSettings(enabled = true, targetPercent = 55, compressionChunkTokens = 2048),
     favoriteModels = listOf(id(30)),
     chatModelId = id(1),
     fastModelId = id(2),
@@ -170,6 +172,7 @@ private val STORED_KEYS = setOf(
     "custom_themes",
     "display_setting",
     "network_setting",
+    "context_management",
     "developer_mode",
     "favorite_models",
     "chat_model",

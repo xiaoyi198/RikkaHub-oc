@@ -1,6 +1,10 @@
 package me.rerere.rikkahub.data.ai.tools
 
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonObjectBuilder
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
@@ -13,11 +17,13 @@ import me.rerere.ai.ui.UIMessagePart
 import me.rerere.ai.ui.toMetadata
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.repository.WorkspaceRepository
+import me.rerere.rikkahub.service.WorkspaceTaskManager
 import me.rerere.rikkahub.utils.generateUnifiedDiff
 import me.rerere.workspace.WorkspaceCapabilities
 import me.rerere.workspace.WorkspaceFileEntry
 import me.rerere.workspace.WorkspaceLayout
 import me.rerere.workspace.WorkspaceManager
+import me.rerere.workspace.WorkspaceTask
 import org.koin.java.KoinJavaComponent.getKoin
 import java.io.ByteArrayOutputStream
 
@@ -41,6 +47,10 @@ suspend fun createWorkspaceTools(
     workspaceId: String?,
     workspaceRepository: WorkspaceRepository,
     cwd: String? = null,
+    taskManager: WorkspaceTaskManager? = null,
+    conversationId: String? = null,
+    sourceMessageId: () -> String? = { null },
+    attachmentFiles: List<String> = emptyList(),
 ): List<Tool> {
     if (workspaceId.isNullOrBlank()) return emptyList()
     val layout = workspaceRepository.layout(workspaceId) ?: return emptyList()
@@ -56,7 +66,9 @@ suspend fun createWorkspaceTools(
             add(createWriteFileTool(workspaceId, layout, ::needsApproval, workspaceRepository))
             add(createEditFileTool(workspaceId, layout, ::needsApproval, workspaceRepository))
         }
-        add(createShellTool(workspaceId, layout, ::needsApproval, workspaceRepository, shellCwd))
+        val managed = taskManager.takeIf { workspace.capabilities().rootfs && conversationId != null }
+        add(createShellTool(workspaceId, layout, ::needsApproval, workspaceRepository, shellCwd, managed, conversationId, sourceMessageId, attachmentFiles))
+        if (managed != null && conversationId != null) addAll(createWorkspaceTaskTools(managed, conversationId))
     }
 }
 
@@ -217,6 +229,10 @@ private fun createShellTool(
     needsApproval: (String) -> Boolean,
     workspaceRepository: WorkspaceRepository,
     defaultCwd: String? = null,
+    taskManager: WorkspaceTaskManager? = null,
+    conversationId: String? = null,
+    sourceMessageId: () -> String? = { null },
+    attachmentFiles: List<String> = emptyList(),
 ) = Tool(
     name = "workspace_shell",
     description = buildString {
@@ -228,6 +244,7 @@ private fun createShellTool(
             append("Defaults to '$defaultCwd'. ")
         }
         append("Requires Rootfs to be installed and ready.")
+        if (taskManager != null) append(" Set background=true to return a taskId immediately and keep working. Completion is delivered automatically; do not busy-poll. Use workspace_task_output to inspect useful output and workspace_task_stop when no longer needed.")
     },
     parameters = {
         InputSchema.Obj(
@@ -247,11 +264,17 @@ private fun createShellTool(
                         }
                     )
                 })
+                if (taskManager != null) {
+                    put("background", buildJsonObject {
+                        put("type", "boolean")
+                        put("description", "Run independently of this tool call. Returns taskId; no need to append &. Defaults to false.")
+                    })
+                }
                 put("timeout", buildJsonObject {
                     put("type", "integer")
                     put(
                         "description",
-                        "Command timeout in seconds. Defaults to 30, max $SHELL_TIMEOUT_MAX_SECONDS."
+                        "Execution timeout in seconds, max $SHELL_TIMEOUT_MAX_SECONDS. Foreground defaults to 30. Background defaults to no limit (0)."
                     )
                 })
             },
@@ -263,22 +286,44 @@ private fun createShellTool(
         val params = it.jsonObject
         val command = params.string("command") ?: error("command is required")
         val cwd = layout.relativeToWorkspace(params.string("cwd") ?: defaultCwd.orEmpty())
-        val timeoutMillis = params.string("timeout")?.toLongOrNull()
-            ?.coerceIn(1L, SHELL_TIMEOUT_MAX_SECONDS)
-            ?.times(1_000L)
-            ?: WorkspaceManager.DEFAULT_COMMAND_TIMEOUT_MS
-        val result = workspaceRepository.executeCommand(workspaceId, command, cwd, timeoutMillis)
-        listOf(
-            UIMessagePart.Text(
-                buildJsonObject {
-                    put("exitCode", result.exitCode)
-                    put("stdout", result.stdout)
-                    put("stderr", result.stderr)
-                    put("timedOut", result.timedOut)
-                    if (result.truncated) put("truncated", true)
-                }.toString()
+        if (taskManager != null && conversationId != null) {
+            val background = params["background"]?.jsonPrimitive?.booleanOrNull ?: false
+            val timeout = params.string("timeout")?.toLongOrNull()
+            require(timeout == null || timeout in (if (background) 0L else 1L)..SHELL_TIMEOUT_MAX_SECONDS) { "Invalid command timeout" }
+            val requested = WorkspaceTask(
+                conversationId = conversationId, workspaceId = workspaceId, sourceMessageId = sourceMessageId(),
+                command = command, cwd = cwd, background = background, attachmentFiles = attachmentFiles,
+                timeoutMillis = timeout?.times(1000) ?: if (background) 0 else WorkspaceManager.DEFAULT_COMMAND_TIMEOUT_MS,
+                explicitTimeout = timeout != null,
             )
-        )
+            try {
+                val task = taskManager.start(requested)
+                val result = if (background) task else taskManager.engine.await(task.id, conversationId)
+                listOf(UIMessagePart.Text(workspaceTaskJson(result).toString()))
+            } catch (cancelled: CancellationException) {
+                withContext(NonCancellable) {
+                    runCatching {
+                        if (!taskManager.engine.get(requested.id, conversationId).background) taskManager.engine.stop(requested.id, conversationId)
+                    }
+                }
+                throw cancelled
+            }
+        } else {
+            val timeoutMillis = params.string("timeout")?.toLongOrNull()
+                ?.coerceIn(1L, SHELL_TIMEOUT_MAX_SECONDS)?.times(1_000L) ?: WorkspaceManager.DEFAULT_COMMAND_TIMEOUT_MS
+            val result = workspaceRepository.executeCommand(workspaceId, command, cwd, timeoutMillis)
+            listOf(
+                UIMessagePart.Text(
+                    buildJsonObject {
+                        put("exitCode", result.exitCode)
+                        put("stdout", result.stdout)
+                        put("stderr", result.stderr)
+                        put("timedOut", result.timedOut)
+                        if (result.truncated) put("truncated", true)
+                    }.toString()
+                )
+            )
+        }
     },
 )
 

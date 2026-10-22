@@ -46,6 +46,17 @@ class WorkspaceRepository(
     private val settingsStore: SettingsStore,
     private val sshPool: SshConnectionPool,
 ) {
+    internal var beforeWorkspaceMutation: suspend (String) -> Unit = {}
+    internal var afterWorkspaceMutation: suspend (String) -> Unit = {}
+
+    suspend fun startLocalCommand(id: String, command: String, cwd: String): me.rerere.workspace.WorkspaceProcess {
+        val workspace = dao.getById(id) ?: error("Workspace not found")
+        require(
+            workspace.capabilities().rootfs && workspace.shellStatus == WorkspaceShellStatus.READY.name
+        ) { "Local workspace is not ready" }
+        return manager.startCommand(workspace.root, command, cwd, workspace.shellCompatibilityMode)
+    }
+
     fun listFlow(): Flow<List<WorkspaceEntity>> = dao.listFlow()
 
     suspend fun checkIntegrity() = withContext(Dispatchers.IO) {
@@ -179,8 +190,9 @@ class WorkspaceRepository(
     ): Boolean {
         val workspace = dao.getById(id) ?: return false
         require(workspace.capabilities().rootfs) { "Rootfs is not available for ${workspace.type} workspaces" }
-        updateShellState(workspace, WorkspaceShellStatus.INSTALLING.name)
+        beforeWorkspaceMutation(id)
         try {
+            updateShellState(workspace, WorkspaceShellStatus.INSTALLING.name)
             // runInterruptible 让协程取消转成线程中断, 打断 install 内阻塞的下载/解压循环
             runInterruptible(Dispatchers.IO) {
                 rootfsInstaller.install(workspace.root, url, onProgress)
@@ -201,6 +213,8 @@ class WorkspaceRepository(
             Log.e(TAG, "installRootfs failed: workspace=${workspace.id}, root=${workspace.root}, url=$url", e)
             updateShellState(workspace, WorkspaceShellStatus.BROKEN.name)
             throw e
+        } finally {
+            withContext(NonCancellable) { afterWorkspaceMutation(id) }
         }
     }
 
@@ -347,6 +361,7 @@ class WorkspaceRepository(
     }
 
     suspend fun delete(id: String): Boolean {
+        beforeWorkspaceMutation(id)
         val workspace = dao.getById(id) ?: return false
         dao.deleteById(id)
         withContext(Dispatchers.IO) {

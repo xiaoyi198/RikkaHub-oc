@@ -12,9 +12,9 @@ data class PruneBudget(val protect: Int, val minimum: Int)
 fun contextPruneBudget(input: Int, settings: ContextManagementSettings): PruneBudget {
     val maximum = (input / 2).coerceAtLeast(1)
     return PruneBudget(
-        protect = (settings.pruneProtectTokens.takeIf { it > 0 } ?: minOf(40_000, (input.toLong() * 2 / 5).toInt()))
+        protect = (settings.pruneProtectTokens.takeIf { it > 0 } ?: (input.toLong() * 2 / 5).toInt())
             .coerceIn(1, maximum),
-        minimum = (settings.pruneMinimumTokens.takeIf { it > 0 } ?: minOf(20_000, input / 5))
+        minimum = (settings.pruneMinimumTokens.takeIf { it > 0 } ?: (input / 5))
             .coerceIn(1, maximum),
     )
 }
@@ -39,6 +39,7 @@ fun pruneContext(
     recallAvailable: Boolean,
     consumedMessageId: String? = null,
     consumedBeforePart: Int = 0,
+    originalItems: List<ContextItem> = items,
 ): PrunedContext {
     if (!settings.enabled || !settings.prune || !recallAvailable) return PrunedContext(items)
     val budget = contextPruneBudget(inputBudget, settings)
@@ -48,11 +49,10 @@ fun pruneContext(
     val currentId = originals.lastOrNull()?.takeIf { it.role == MessageRole.ASSISTANT }?.id?.toString()
     // Skills and user answers can contain durable instructions rather than disposable observations.
     val protectedTools = setOf("skill", "use_skill", "ask_user") + settings.pruneProtectedTools
-    val replacements = mutableMapOf<Pair<Int, Int>, UIMessagePart.Tool>()
+    val replacements = mutableMapOf<Pair<ContextSource, Int>, UIMessagePart.Tool>()
     var protectedTokens = 0L
     var saved = 0L
-    for (itemIndex in items.indices.reversed()) {
-        val item = items[itemIndex]
+    for (item in originalItems.asReversed()) {
         // Older history is already represented by a summary; never walk across it.
         if (item.summary != null) break
         val messageId = item.message.id.toString()
@@ -82,17 +82,27 @@ fun pruneContext(
                 "use history_read(id=\"$messageId\", tool_call_id=\"${tool.toolCallId}\") to recover it.]"
             val saving = outputTokens - estimateContextText(marker)
             if (saving <= 0) continue
-            replacements[itemIndex to partIndex] = tool.copy(output = listOf(UIMessagePart.Text(marker)))
+            replacements[source to partIndex] = tool.copy(output = listOf(UIMessagePart.Text(marker)))
             saved += saving
         }
     }
     if (saved < budget.minimum) return PrunedContext(items)
     val sources = mutableSetOf<ContextSource>()
-    val projected = items.mapIndexed { itemIndex, item ->
+    var visibleSaved = 0L
+    var toolCount = 0
+    val projected = items.map { item ->
+        if (item.summary != null) return@map item
+        val source = item.sources.singleOrNull() ?: return@map item
         val parts = item.message.parts.mapIndexed { partIndex, part ->
-            replacements[itemIndex to partIndex]?.also { sources.addAll(item.sources) } ?: part
+            replacements[source to partIndex]?.also { replacement ->
+                sources.add(source)
+                toolCount++
+                visibleSaved += (part as UIMessagePart.Tool).output.sumOf {
+                    estimateContextText((it as UIMessagePart.Text).text).toLong()
+                } - estimateContextText((replacement.output.single() as UIMessagePart.Text).text)
+            } ?: part
         }
         if (parts == item.message.parts) item else item.copy(message = item.message.copy(parts = parts))
     }
-    return PrunedContext(projected, sources, saved.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(), replacements.size)
+    return PrunedContext(projected, sources, visibleSaved.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(), toolCount)
 }

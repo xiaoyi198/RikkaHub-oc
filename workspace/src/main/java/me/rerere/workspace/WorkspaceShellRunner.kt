@@ -8,6 +8,8 @@ import java.util.concurrent.TimeUnit
 interface WorkspaceShellRunner {
     fun execute(context: WorkspaceShellContext): WorkspaceCommandResult
 
+    fun start(context: WorkspaceShellContext): WorkspaceProcess = error("Managed commands are not supported")
+
     /** 交互式终端的启动参数, 不支持交互式终端时返回 null */
     fun terminalLaunch(context: WorkspaceTerminalContext): WorkspaceTerminalLaunch? = null
 }

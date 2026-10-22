@@ -14,6 +14,7 @@ data class QueuedMessage(
     val parts: List<UIMessagePart>,
     val answer: Boolean = true,
     val isEditing: Boolean = false,
+    val backgroundTaskId: String? = null,
     // Optional in-memory observer; null result means the queued message was withdrawn.
     val reply: CompletableDeferred<String?>? = null,
 )
@@ -42,16 +43,23 @@ class MessageQueue {
     val state = mutableState.asStateFlow()
 
     @Synchronized
-    fun enqueue(parts: List<UIMessagePart>, answer: Boolean = true, reply: CompletableDeferred<String?>? = null) {
+    fun enqueue(
+        parts: List<UIMessagePart>,
+        answer: Boolean = true,
+        reply: CompletableDeferred<String?>? = null,
+        backgroundTaskId: String? = null
+    ) {
         if (parts.isEmptyInputMessage()) {
             reply?.complete(null)
             return
         }
         mutableState.value = state.value.copy(
             messages = state.value.messages + QueuedMessage(
+                id = backgroundTaskId?.let(Uuid::parse) ?: Uuid.random(),
                 parts = parts.toList(),
                 answer = answer,
                 reply = reply,
+                backgroundTaskId = backgroundTaskId,
             ),
         )
     }
@@ -89,10 +97,14 @@ class MessageQueue {
         val previous = state.value.messages.find { it.id == id } ?: return null
         mutableState.value = state.value.copy(
             messages = state.value.messages.map {
-                if (it.id == id) it.copy(
-                    parts = parts?.toList() ?: it.parts,
-                    isEditing = false
-                ) else it
+                if (it.id == id) {
+                    it.copy(
+                        parts = parts?.toList() ?: it.parts,
+                        isEditing = false
+                    )
+                } else {
+                    it
+                }
             },
         )
         // 取消编辑只释放占位，不能清理原附件。

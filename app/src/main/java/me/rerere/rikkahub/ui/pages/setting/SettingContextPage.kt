@@ -23,6 +23,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import me.rerere.ai.provider.ModelType
+import me.rerere.rikkahub.Screen
 import me.rerere.rikkahub.data.model.ContextManagementSettings
 import me.rerere.rikkahub.ui.components.ai.ModelField
 import me.rerere.rikkahub.ui.components.ai.ModelListSheet
@@ -31,6 +32,7 @@ import me.rerere.rikkahub.ui.components.nav.BackButton
 import me.rerere.rikkahub.ui.components.ui.CardGroup
 import me.rerere.rikkahub.ui.components.ui.CardGroupValue
 import me.rerere.rikkahub.ui.components.ui.switchItem
+import me.rerere.rikkahub.ui.context.LocalNavController
 import me.rerere.rikkahub.ui.theme.CustomColors
 import me.rerere.rikkahub.utils.plus
 import org.koin.androidx.compose.koinViewModel
@@ -41,8 +43,13 @@ fun SettingContextPage(vm: SettingVM = koinViewModel()) {
     val config = settings.contextManagement
     val scroll = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
     val summaryModel = rememberModelListState(config.summaryModelId, settings.providers, ModelType.CHAT)
+    val navController = LocalNavController.current
     fun update(transform: (ContextManagementSettings) -> ContextManagementSettings) {
-        vm.updateSettings { latest -> latest.copy(contextManagement = transform(latest.contextManagement)) }
+        vm.updateSettings { latest ->
+            latest.copy(
+                contextManagement = transform(latest.contextManagement).normalized()
+            )
+        }
     }
 
     Scaffold(
@@ -85,110 +92,17 @@ fun SettingContextPage(vm: SettingVM = koinViewModel()) {
                         headlineContent = { Text("裁剪较早的工具结果") },
                         supportingContent = { Text("默认关闭。先批量裁剪旧文本结果，预算仍不足时再摘要；不调用模型、不改写原文。需要开启历史回查，并使用支持工具调用的模型。") },
                     )
-                    item(
-                        headlineContent = { Text("保护近期结果与指令") },
-                        supportingContent = {
-                            Text(
-                                "保留最近两轮用户对话、技能、用户回答和媒体结果。长工具循环中，仅裁剪模型已读过的较早结果，最新一批完整保留。裁剪独立于自动摘要开关。"
-                            )
-                        },
-                    )
-                    formItem(
-                        headlineContent = { Text("额外保留的工具结果预算") },
-                        supportingContent = {
-                            Text(
-                                "在上述保护范围外，再保留一段近期工具结果。0 为自动：可用输入预算的 40%，最多 40,000 tokens；手动设置不超过输入预算的一半。"
-                            )
-                        },
-                    ) {
-                        ContextTokenField(
-                            config.pruneProtectTokens,
-                            config.enabled && config.prune,
-                            0..1_000_000
-                        ) { value ->
-                            update { it.copy(pruneProtectTokens = value) }
-                        }
-                    }
-                    formItem(
-                        headlineContent = { Text("单批最少释放量") },
-                        supportingContent = {
-                            Text(
-                                "达到此净节省量才裁剪，避免频繁改动请求前缀。0 为自动：可用输入预算的 20%，最多 20,000 tokens；手动设置也受窗口限制。"
-                            )
-                        },
-                    ) {
-                        ContextTokenField(
-                            config.pruneMinimumTokens,
-                            config.enabled && config.prune,
-                            0..1_000_000
-                        ) { value ->
-                            update { it.copy(pruneMinimumTokens = value) }
-                        }
-                    }
-                    formItem(
-                        headlineContent = { Text("额外保护的工具名称") },
-                        supportingContent = { Text("填写完整名称，每行一个或用逗号分隔。skill、use_skill、ask_user 始终保护。") },
-                    ) {
-                        var draft by remember(config.pruneProtectedTools) {
-                            mutableStateOf(config.pruneProtectedTools.joinToString("\n"))
-                        }
-                        OutlinedTextField(
-                            value = draft,
-                            onValueChange = { input ->
-                                draft = input
-                                val names = input.split(
-                                    '\n',
-                                    ',',
-                                    '，'
-                                ).map(String::trim).filter(String::isNotEmpty).distinct()
-                                update { it.copy(pruneProtectedTools = names) }
-                            },
-                            enabled = config.enabled && config.prune,
-                            modifier = Modifier.fillMaxWidth(),
-                            label = { Text("工具名称") },
-                            minLines = 2,
-                        )
-                    }
                 }
             }
             item {
-                CardGroup(title = { Text("压缩时机与预算") }) {
+                CardGroup(title = { Text("自动压缩") }) {
                     switchItem(
                         checked = config.autoCompress,
                         enabled = config.enabled,
                         onCheckedChange = { value -> update { it.copy(autoCompress = value) } },
                         headlineContent = { Text("自动压缩") },
-                        supportingContent = { Text("在新请求和多轮工具调用之间检查预算；启用 Prune 时先裁剪再摘要。关闭此项后仍可单独使用 Prune 或手动压缩。") },
+                        supportingContent = { Text("达到触发比例后尽量降到目标占用，为后续对话留出空间。优先为新增历史生成独立摘要；启用 Prune 时先裁剪再摘要。") },
                     )
-                    formItem(
-                        headlineContent = { Text("压缩触发比例") },
-                        trailingContent = { CardGroupValue("${config.triggerPercent}%") },
-                        supportingContent = { Text("同时预留回复空间与安全余量；实际触发点取更保守的预算。") },
-                    ) {
-                        Slider(
-                            value = config.triggerPercent.toFloat(),
-                            onValueChange = { value -> update { it.copy(triggerPercent = value.toInt()) } },
-                            valueRange = 50f..95f,
-                            steps = 8,
-                            enabled = config.enabled,
-                        )
-                    }
-                    formItem(
-                        headlineContent = { Text("最近原文保留预算") },
-                        supportingContent = { Text("0 为自动：可用输入预算的约 20%，最多 20,000 tokens。小窗口会自动缩小，工具调用与结果保持完整。") },
-                    ) {
-                        ContextTokenField(config.recentTokens, config.enabled, 0..1_000_000) { value ->
-                            update { it.copy(recentTokens = value) }
-                        }
-                    }
-                    formItem(
-                        headlineContent = { Text("摘要长度预算") },
-                        supportingContent = { Text("0 为自动。数值越大，可保留更多细节，也会占用更多上下文。") },
-                    ) {
-                        ContextTokenField(config.summaryTokens, config.enabled, 0..32_768) { value ->
-                            update { it.copy(summaryTokens = value) }
-                        }
-                    }
                 }
             }
             item {
@@ -222,14 +136,16 @@ fun SettingContextPage(vm: SettingVM = koinViewModel()) {
                             )
                         },
                     )
-                    formItem(
-                        headlineContent = { Text("单次回查返回预算") },
-                        supportingContent = { Text("返回结果支持分页，实际预算也会根据模型窗口缩小。") },
-                    ) {
-                        ContextTokenField(config.recallTokens, config.enabled, 256..32_768) { value ->
-                            update { it.copy(recallTokens = value) }
-                        }
-                    }
+                }
+            }
+            item {
+                CardGroup {
+                    item(
+                        onClick = { navController.navigate(Screen.SettingContextAdvanced) },
+                        headlineContent = { Text("高级设置") },
+                        supportingContent = { Text("调整压缩、工具裁剪和历史回查预算。压缩和裁剪预算填 0 时自动适配模型窗口。") },
+                        trailingContent = { CardGroupValue("进入") },
+                    )
                 }
             }
             item {
@@ -247,7 +163,13 @@ fun SettingContextPage(vm: SettingVM = koinViewModel()) {
 }
 
 @Composable
-private fun ContextTokenField(value: Int, enabled: Boolean, range: IntRange, onChange: (Int) -> Unit) {
+private fun ContextTokenField(
+    value: Int,
+    enabled: Boolean,
+    range: IntRange,
+    effective: Int? = null,
+    onChange: (Int) -> Unit,
+) {
     var draft by remember(value) { mutableStateOf(value.toString()) }
     val valid = draft.toIntOrNull()?.let { it in range } == true
     OutlinedTextField(
@@ -261,9 +183,15 @@ private fun ContextTokenField(value: Int, enabled: Boolean, range: IntRange, onC
         enabled = enabled,
         modifier = Modifier.fillMaxWidth(),
         singleLine = true,
-        label = { Text("Tokens") },
+        label = { Text(if (range.first == 0) "Tokens（0 为自动）" else "Tokens") },
         isError = draft.isNotEmpty() && !valid,
-        supportingText = { if (!valid && draft.isNotEmpty()) Text("请输入 ${range.first}–${range.last}") },
+        supportingText = {
+            if (!valid && draft.isNotEmpty()) {
+                Text("请输入 ${range.first}–${range.last}")
+            } else if (effective != null) {
+                Text("参考模型生效值：$effective tokens")
+            }
+        },
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
     )
 }

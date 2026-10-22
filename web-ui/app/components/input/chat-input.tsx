@@ -19,6 +19,7 @@ import { toast } from "sonner";
 
 import { useCurrentAssistant } from "~/hooks/use-current-assistant";
 import { ModelList } from "~/components/input/model-list";
+import { WorkspaceTasks } from "~/components/input/workspace-tasks";
 import { ReasoningPickerButton } from "~/components/input/reasoning-picker";
 import { SearchPickerButton } from "~/components/input/search-picker";
 import { McpPickerButton } from "~/components/input/mcp-picker";
@@ -60,45 +61,28 @@ export interface ChatInputProps {
 
 const IMAGE_UPLOAD_ACCEPT = "image/*";
 
-async function detectUploadFile(
-  file: globalThis.File,
-): Promise<{ allowed: boolean; mimeType: string }> {
+async function detectUploadFile(file: globalThis.File): Promise<{ mimeType: string }> {
   const buffer = await file.slice(0, 4100).arrayBuffer();
-  const detected = await fileTypeFromBuffer(buffer);
+  const detected = await fileTypeFromBuffer(buffer).catch(() => undefined);
+  if (detected) return { mimeType: detected.mime };
 
-  // 无法识别 magic bytes → 文本文件 → 允许，强制 text/plain 防止 OS MIME 映射污染（如 .ts → video/mp2t）
-  if (!detected) return { allowed: true, mimeType: "text/plain" };
-
-  // 识别为图片 / 视频 / 音频 → 允许，使用 magic bytes 检测到的 MIME
-  if (
-    detected.mime.startsWith("image/") ||
-    detected.mime.startsWith("video/") ||
-    detected.mime.startsWith("audio/")
-  ) {
-    return { allowed: true, mimeType: detected.mime };
+  // MIME classification chooses the message part; every file type can be uploaded.
+  try {
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(buffer, {
+      stream: true,
+    });
+    if (![...text].some((char) => char.charCodeAt(0) < 32 && !"\n\r\t\f".includes(char))) {
+      return { mimeType: "text/plain" };
+    }
+  } catch {
+    // Unrecognized binary data stays a binary attachment.
   }
-
-  // 允许常见文档格式
-  const ALLOWED_DOCUMENT_MIMES = new Set([
-    "application/pdf",
-    "application/msword",
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    "application/vnd.ms-excel",
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    "application/vnd.ms-powerpoint",
-    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-  ]);
-  if (ALLOWED_DOCUMENT_MIMES.has(detected.mime)) {
-    return { allowed: true, mimeType: detected.mime };
-  }
-
-  // 其他可识别的二进制格式（exe、zip 等）→ 拒绝
-  return { allowed: false, mimeType: detected.mime };
+  return {
+    mimeType: file.type || "application/octet-stream",
+  };
 }
 
-function toMessagePart(
-  file: UploadFilesResponseDto["files"][number],
-): UIMessagePart {
+function toMessagePart(file: UploadFilesResponseDto["files"][number]): UIMessagePart {
   if (file.mime.startsWith("image/")) {
     return {
       type: "image",
@@ -235,10 +219,8 @@ function ChatInputInner({
 
   const canStop = ready && Boolean(onStop) && isGenerating && !disabled;
   const canSend = ready && !isGenerating && !disabled && !isEmpty;
-  const canUpload =
-    ready && !disabled && !isGenerating && !uploading && !submitting;
-  const canSwitchModel =
-    ready && !disabled && !isGenerating && !uploading && !submitting;
+  const canUpload = ready && !disabled && !isGenerating && !uploading && !submitting;
+  const canSwitchModel = ready && !disabled && !isGenerating && !uploading && !submitting;
   const canUseQuickMessage = ready && !disabled && !uploading && !submitting;
   const actionDisabled = submitting || uploading || (!canStop && !canSend);
 
@@ -260,21 +242,9 @@ function ChatInputInner({
       const results = await Promise.all(
         allFiles.map(async (f) => ({ file: f, ...(await detectUploadFile(f)) })),
       );
-      const uploadableFiles = results.filter((r) => r.allowed);
-      const skippedFiles = results.filter((r) => !r.allowed);
-
-      if (skippedFiles.length > 0) {
-        toast.warning(
-          t("chat.unsupported_file_skipped", { count: skippedFiles.length }),
-        );
-      }
-
-      if (uploadableFiles.length === 0) {
-        return;
-      }
 
       const formData = new FormData();
-      uploadableFiles.forEach(({ file, mimeType }) => {
+      results.forEach(({ file, mimeType }) => {
         // 用 magic bytes 检测结果覆盖浏览器的 file.type，修正跨平台 MIME 歧义
         const safeFile =
           file.type !== mimeType
@@ -286,17 +256,12 @@ function ChatInputInner({
       setUploading(true);
       setError(null);
       try {
-        const response = await api.postMultipart<UploadFilesResponseDto>(
-          "files/upload",
-          formData,
-        );
+        const response = await api.postMultipart<UploadFilesResponseDto>("files/upload", formData);
         const parts = response.files.map(toMessagePart);
         onAddParts(parts);
       } catch (uploadError) {
         const message =
-          uploadError instanceof Error
-            ? uploadError.message
-            : t("chat.upload_failed");
+          uploadError instanceof Error ? uploadError.message : t("chat.upload_failed");
         setError(message);
       } finally {
         setUploading(false);
@@ -323,10 +288,7 @@ function ChatInputInner({
         await onSend();
       }
     } catch (submitError) {
-      const message =
-        submitError instanceof Error
-          ? submitError.message
-          : t("chat.send_failed");
+      const message = submitError instanceof Error ? submitError.message : t("chat.send_failed");
       setError(message);
     } finally {
       setSubmitting(false);
@@ -457,17 +419,14 @@ function ChatInputInner({
     [canUpload, dragActive],
   );
 
-  const handleDragLeave = React.useCallback(
-    (event: React.DragEvent<HTMLDivElement>) => {
-      event.preventDefault();
-      event.stopPropagation();
-      dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
-      if (dragDepthRef.current === 0) {
-        setDragActive(false);
-      }
-    },
-    [],
-  );
+  const handleDragLeave = React.useCallback((event: React.DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+    if (dragDepthRef.current === 0) {
+      setDragActive(false);
+    }
+  }, []);
 
   const handleDrop = React.useCallback(
     async (event: React.DragEvent<HTMLDivElement>) => {
@@ -482,12 +441,8 @@ function ChatInputInner({
     [canUpload, uploadFiles],
   );
 
-  const sendHint = sendOnEnter
-    ? t("chat.send_hint_enter")
-    : t("chat.send_hint_newline");
-  const placeholder = ready
-    ? t("chat.placeholder_ready")
-    : t("chat.placeholder_not_ready");
+  const sendHint = sendOnEnter ? t("chat.send_hint_enter") : t("chat.send_hint_newline");
+  const placeholder = ready ? t("chat.placeholder_ready") : t("chat.placeholder_not_ready");
 
   return (
     <div
@@ -497,11 +452,17 @@ function ChatInputInner({
       )}
     >
       <div className="mx-auto w-full max-w-3xl px-4 py-4">
+        <WorkspaceTasks
+          conversationId={
+            conversation && (conversation.config || conversation.messages.length)
+              ? conversation.id
+              : undefined
+          }
+        />
         <div
           className={cn(
             "relative flex flex-col gap-2 rounded-3xl border border-border/60 bg-muted/50 p-2.5 transition-colors focus-within:border-border",
-            dragActive &&
-              "border-primary/40 bg-primary/5 ring-2 ring-primary/30",
+            dragActive && "border-primary/40 bg-primary/5 ring-2 ring-primary/30",
           )}
           onDragEnter={handleDragEnter}
           onDragOver={handleDragOver}
@@ -573,18 +534,12 @@ function ChatInputInner({
                     <button
                       className="rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
                       onClick={async () => {
-                        if (!ready || disabled || isGenerating || submitting)
-                          return;
+                        if (!ready || disabled || isGenerating || submitting) return;
 
                         const fileId = getPartFileId(part);
-                        if (
-                          fileId != null &&
-                          (shouldDeleteFileOnRemove?.(part) ?? true)
-                        ) {
+                        if (fileId != null && (shouldDeleteFileOnRemove?.(part) ?? true)) {
                           try {
-                            await api.delete<{ status: string }>(
-                              `files/${fileId}`,
-                            );
+                            await api.delete<{ status: string }>(`files/${fileId}`);
                           } catch (deleteError) {
                             const message =
                               deleteError instanceof Error
@@ -613,8 +568,8 @@ function ChatInputInner({
             onChange={handleTextChange}
             onKeyDown={handleKeyDown}
             onPaste={(event) => {
-                void handlePaste(event);
-              }}
+              void handlePaste(event);
+            }}
             placeholder={placeholder}
             disabled={!ready || disabled}
             className="min-h-[64px] max-h-[200px] resize-none border-0 bg-transparent dark:bg-transparent p-2 text-sm shadow-none focus-visible:ring-0"
@@ -622,10 +577,7 @@ function ChatInputInner({
           />
           <div className="flex items-center justify-between gap-2">
             <div className="flex min-w-0 flex-wrap items-center gap-0.5">
-              <DropdownMenu
-                open={uploadMenuOpen}
-                onOpenChange={setUploadMenuOpen}
-              >
+              <DropdownMenu open={uploadMenuOpen} onOpenChange={setUploadMenuOpen}>
                 <input
                   ref={fileInputRef}
                   className="hidden"
@@ -649,18 +601,11 @@ function ChatInputInner({
                     className="size-8 rounded-full text-muted-foreground hover:text-foreground"
                   >
                     <Plus
-                      className={cn(
-                        "size-4 transition-transform",
-                        uploadMenuOpen && "rotate-45",
-                      )}
+                      className={cn("size-4 transition-transform", uploadMenuOpen && "rotate-45")}
                     />
                   </Button>
                 </DropdownMenuTrigger>
-                <DropdownMenuContent
-                  className="min-w-36"
-                  side="top"
-                  align="start"
-                >
+                <DropdownMenuContent className="min-w-36" side="top" align="start">
                   <DropdownMenuItem
                     onClick={() => {
                       imageInputRef.current?.click();
@@ -701,10 +646,7 @@ function ChatInputInner({
               </DropdownMenu>
               <SearchPickerButton disabled={!canSwitchModel} conversation={conversation} />
               <McpPickerButton disabled={!canSwitchModel} conversation={conversation} />
-              <ExtensionPickerButton
-                conversation={conversation}
-                disabled={!canSwitchModel}
-              />
+              <ExtensionPickerButton conversation={conversation} disabled={!canSwitchModel} />
               <QuickMessageButton
                 quickMessages={quickMessages}
                 disabled={!canUseQuickMessage}
@@ -744,12 +686,8 @@ function ChatInputInner({
             </div>
           </div>
         </div>
-        <p className="sr-only">
-          {sendHint}
-        </p>
-        {error ? (
-          <p className="mt-1 text-center text-xs text-destructive">{error}</p>
-        ) : null}
+        <p className="sr-only">{sendHint}</p>
+        {error ? <p className="mt-1 text-center text-xs text-destructive">{error}</p> : null}
       </div>
     </div>
   );
@@ -791,7 +729,11 @@ function QuickMessageButton({
           <Zap className="size-4" />
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent className="w-[min(92vw,20rem)] max-h-64 overflow-y-auto" side="top" align="start">
+      <DropdownMenuContent
+        className="w-[min(92vw,20rem)] max-h-64 overflow-y-auto"
+        side="top"
+        align="start"
+      >
         {quickMessages.map((quickMessage, index) => {
           const key = `${quickMessage.title}-${index}`;
           return (
@@ -803,9 +745,7 @@ function QuickMessageButton({
               }}
             >
               <div className="min-w-0">
-                <div className="truncate text-sm font-medium">
-                  {quickMessage.title}
-                </div>
+                <div className="truncate text-sm font-medium">{quickMessage.title}</div>
                 <div className="text-muted-foreground mt-0.5 line-clamp-2 text-xs">
                   {quickMessage.content}
                 </div>

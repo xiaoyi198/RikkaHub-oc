@@ -13,6 +13,21 @@ class MessageQueueTest {
     private fun text(value: String) = listOf(UIMessagePart.Text(value))
 
     @Test
+    fun `background result retains its durable id and never unpauses the conversation`() {
+        val queue = MessageQueue()
+        val id = kotlin.uuid.Uuid.random()
+        queue.pause()
+        queue.enqueue(text("finished"), answer = false, backgroundTaskId = id.toString())
+        assertNull(queue.takeNext())
+        assertTrue(queue.state.value.paused)
+        queue.resume()
+        val result = queue.takeNext()!!
+        assertEquals(id, result.id)
+        assertEquals(id.toString(), result.backgroundTaskId)
+        assertFalse(result.answer)
+    }
+
+    @Test
     fun `editing a voice message preserves its reply observer and queue position`() {
         val queue = MessageQueue()
         val reply = CompletableDeferred<String?>()

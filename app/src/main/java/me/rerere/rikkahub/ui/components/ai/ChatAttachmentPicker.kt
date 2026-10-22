@@ -14,7 +14,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalResources
 import androidx.core.content.FileProvider
 import androidx.core.net.toUri
-import me.rerere.ui.toast.ToastType
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -23,15 +22,15 @@ import me.rerere.common.android.appTempFolder
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.files.FilesManager
-import me.rerere.ui.sketch.SketchDialog
-import me.rerere.ui.sketch.SketchResult
 import me.rerere.rikkahub.ui.components.ui.permission.PermissionCamera
 import me.rerere.rikkahub.ui.components.ui.permission.PermissionManager
 import me.rerere.rikkahub.ui.components.ui.permission.rememberPermissionState
 import me.rerere.rikkahub.ui.context.LocalToaster
 import me.rerere.rikkahub.ui.hooks.ChatInputState
 import me.rerere.rikkahub.utils.ImageUtils
-import me.rerere.rikkahub.utils.isAllowedFileType
+import me.rerere.ui.sketch.SketchDialog
+import me.rerere.ui.sketch.SketchResult
+import me.rerere.ui.toast.ToastType
 import org.koin.compose.koinInject
 import java.io.File
 import kotlin.uuid.Uuid
@@ -92,7 +91,9 @@ internal fun rememberChatAttachmentPickerActions(
         if (cameraPermission.allRequiredPermissionsGranted) {
             cameraOutputFile = context.cacheDir.resolve("camera_${Uuid.random()}.jpg")
             cameraOutputUri = FileProvider.getUriForFile(
-                context, "${context.packageName}.fileprovider", cameraOutputFile!!
+                context,
+                "${context.packageName}.fileprovider",
+                cameraOutputFile!!
             )
             cameraLauncher.launch(cameraOutputUri!!)
         } else {
@@ -166,27 +167,22 @@ internal fun rememberChatAttachmentPickerActions(
             if (uris.isNotEmpty()) {
                 val documents = uris.mapNotNull { uri ->
                     val fileName = filesManager.getFileNameFromUri(uri) ?: "file"
-                    val mime = filesManager.getFileMimeType(uri) ?: "text/plain"
-                    if (isAllowedFileType(fileName, mime)) {
-                        val localUri = filesManager.createChatFilesByContents(listOf(uri)).firstOrNull()
-                            ?: run {
-                                toaster.show(
-                                    resources.getString(R.string.chat_input_file_read_failed, fileName),
-                                    type = ToastType.Error
-                                )
-                                return@mapNotNull null
-                            }
-                        UIMessagePart.Document(url = localUri.toString(), fileName = fileName, mime = mime)
-                    } else {
-                        toaster.show(
-                            resources.getString(R.string.chat_input_unsupported_file_type, fileName),
-                            type = ToastType.Error
-                        )
-                        null
+                    val mime = filesManager.getFileMimeType(uri) ?: "application/octet-stream"
+                    val localUri = filesManager.createChatFilesByContents(listOf(uri)).firstOrNull()
+                        ?: run {
+                            toaster.show(
+                                resources.getString(R.string.chat_input_file_read_failed, fileName),
+                                type = ToastType.Error
+                            )
+                            return@mapNotNull null
+                        }
+                    when {
+                        mime.startsWith("image/") -> UIMessagePart.Image(url = localUri.toString())
+                        else -> UIMessagePart.Document(url = localUri.toString(), fileName = fileName, mime = mime)
                     }
                 }
                 if (documents.isNotEmpty()) {
-                    inputState.addFiles(documents)
+                    inputState.messageContent = inputState.messageContent + documents
                     onAttachmentAdded()
                 }
             }

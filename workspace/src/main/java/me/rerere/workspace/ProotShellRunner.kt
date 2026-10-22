@@ -17,6 +17,22 @@ class ProotShellRunner(
     private val nativeLibraryDir: File,
     private val patcher: RootfsPatcher = RootfsPatcher(),
 ) : WorkspaceShellRunner {
+    override fun start(context: WorkspaceShellContext): WorkspaceProcess {
+        require(WorkspaceManager.isUsableRootfs(context.linuxDir)) { "Rootfs is not installed" }
+        val proot = File(nativeLibraryDir, PROOT_EXEC)
+        val loader = File(nativeLibraryDir, PROOT_LOADER)
+        require(proot.isFile && loader.isFile) { "PRoot executable or loader is missing" }
+        context.tempDir.mkdirs()
+        patcher.patch(context.linuxDir)
+        val environment = System.getenv().toMutableMap().apply {
+            put("PROOT_LOADER", loader.absolutePath)
+            put("PROOT_TMP_DIR", context.tempDir.absolutePath)
+            put("TMPDIR", context.tempDir.absolutePath)
+            if (context.shellCompatibilityMode) put("PROOT_NO_SECCOMP", "1") else remove("PROOT_NO_SECCOMP")
+        }
+        return NativeWorkspaceProcess(buildCommand(context, proot), context.filesDir, environment)
+    }
+
     override fun execute(context: WorkspaceShellContext): WorkspaceCommandResult {
         if (!WorkspaceManager.isUsableRootfs(context.linuxDir)) {
             return WorkspaceCommandResult(

@@ -17,8 +17,11 @@ class ContextProjectionTest {
         val original = listOf(UIMessage.user("old"), UIMessage.assistant("answer"), UIMessage.user("new"))
         val units = contextUnits(original)
         val summary = ContextSummary(
-            conversationId = "conversation", text = "old context", sources = units.take(2).map { it.source },
-            tokensBefore = 200, tokensAfter = 20,
+            conversationId = "conversation",
+            text = "old context",
+            sources = units.take(2).map { it.source },
+            tokensBefore = 200,
+            tokensAfter = 20,
         )
         val result = projectContext(units, listOf(summary))
         assertEquals(2, result.size)
@@ -27,13 +30,16 @@ class ContextProjectionTest {
         assertEquals(listOf("old", "answer", "new"), original.map { it.toText() })
         assertFalse(original.any { it.isContextCheckpoint })
         assertEquals(result.first().message.id, projectContext(units, listOf(summary)).first().message.id)
+        assertEquals(original[1].createdAt, result.first().message.createdAt)
+        assertEquals(result.first().message, projectContext(units, listOf(summary)).first().message)
     }
 
     @Test
     fun `editing or switching a source branch invalidates its summary`() {
         val original = UIMessage.user("constraint A")
         val sources = contextUnits(listOf(original)).map { it.source }
-        val summary = ContextSummary(conversationId = "c", text = "A", sources = sources, tokensBefore = 100, tokensAfter = 1)
+        val summary =
+            ContextSummary(conversationId = "c", text = "A", sources = sources, tokensBefore = 100, tokensAfter = 1)
         val edited = original.copy(parts = listOf(UIMessagePart.Text("constraint B")))
         assertFalse(contextSourcesMatch(listOf(edited), sources))
         assertFalse(contextSourcesMatch(listOf(UIMessage.user("constraint A")), sources))
@@ -80,6 +86,9 @@ class ContextProjectionTest {
         val budget = contextBudget(4096, 2048, settings)
         assertTrue(budget.input < 2048)
         assertTrue(budget.trigger <= budget.input)
+        assertTrue(budget.target < budget.trigger)
+        assertTrue(budget.target <= budget.trigger - 4096 / 20)
+        assertTrue(budget.chunk <= budget.input)
         assertTrue(budget.recent <= budget.input / 2)
         assertTrue(budget.summary <= budget.input / 4)
         assertFalse(settings.enabled)

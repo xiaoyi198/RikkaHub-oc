@@ -124,6 +124,14 @@
       android:theme="@style/Theme.AppCompat.Light.NoActionBar" />
 
     <service
+      android:name=".service.WorkspaceTaskForegroundService"
+      android:exported="false"
+      android:foregroundServiceType="specialUse">
+      <property
+        android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+        android:value="User-initiated local workspace commands with visible progress and stop controls" />
+    </service>
+    <service
       android:name=".service.ChatGenerationForegroundService"
       android:exported="false"
       android:foregroundServiceType="dataSync" />

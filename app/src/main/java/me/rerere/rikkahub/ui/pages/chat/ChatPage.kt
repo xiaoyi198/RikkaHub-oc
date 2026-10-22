@@ -47,7 +47,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import me.rerere.ui.toast.ToastType
 import dev.chrisbanes.haze.hazeSource
 import dev.chrisbanes.haze.rememberHazeState
 import kotlinx.coroutines.Job
@@ -74,6 +73,8 @@ import me.rerere.rikkahub.ui.components.ai.ChatAttachmentPickerActions
 import me.rerere.rikkahub.ui.components.ai.ChatInput
 import me.rerere.rikkahub.ui.components.ai.FilesPicker
 import me.rerere.rikkahub.ui.components.ai.SearchMode
+import me.rerere.rikkahub.ui.components.ai.WorkspaceTasksButton
+import me.rerere.rikkahub.ui.components.ai.WorkspaceTasksDrawer
 import me.rerere.rikkahub.ui.components.ai.completion.WorkspaceCompletionProvider
 import me.rerere.rikkahub.ui.components.ai.rememberChatAttachmentPickerActions
 import me.rerere.rikkahub.ui.context.LocalNavController
@@ -84,6 +85,7 @@ import me.rerere.rikkahub.ui.hooks.EditStateContent
 import me.rerere.rikkahub.ui.hooks.useEditState
 import me.rerere.rikkahub.utils.base64Decode
 import me.rerere.rikkahub.utils.navigateToChatPage
+import me.rerere.ui.toast.ToastType
 import org.koin.androidx.compose.koinViewModel
 import org.koin.compose.koinInject
 import org.koin.core.parameter.parametersOf
@@ -154,19 +156,19 @@ fun ChatPage(id: Uuid, text: String?, files: List<Uri>, nodeId: Uuid? = null) {
     // 初始化输入状态（处理传入的 files 和 text 参数）
     LaunchedEffect(files, text) {
         if (files.isNotEmpty()) {
-            val localFiles = filesManager.createChatFilesByContents(files)
-            val contentTypes = files.mapNotNull { file ->
-                filesManager.getFileMimeType(file)
-            }
             val parts = buildList {
-                localFiles.forEachIndexed { index, file ->
-                    val type = contentTypes.getOrNull(index)
-                    if (type?.startsWith("image/") == true) {
-                        add(UIMessagePart.Image(url = file.toString()))
-                    } else if (type?.startsWith("video/") == true) {
-                        add(UIMessagePart.Video(url = file.toString()))
-                    } else if (type?.startsWith("audio/") == true) {
-                        add(UIMessagePart.Audio(url = file.toString()))
+                files.forEach { source ->
+                    val file = filesManager.createChatFilesByContents(listOf(source)).firstOrNull() ?: return@forEach
+                    val type = filesManager.getFileMimeType(source) ?: "application/octet-stream"
+                    when {
+                        type.startsWith("image/") -> add(UIMessagePart.Image(url = file.toString()))
+                        type.startsWith("video/") -> add(UIMessagePart.Video(url = file.toString()))
+                        type.startsWith("audio/") -> add(UIMessagePart.Audio(url = file.toString()))
+                        else -> add(UIMessagePart.Document(
+                            url = file.toString(),
+                            fileName = filesManager.getFileNameFromUri(source) ?: "file",
+                            mime = type,
+                        ))
                     }
                 }
             }
@@ -289,6 +291,7 @@ private fun ChatPageContent(
     val workspaceRepository: WorkspaceRepository = koinInject()
 
     var previewMode by rememberSaveable { mutableStateOf(false) }
+    val taskDrawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val hazeState = rememberHazeState()
     var showFilesSheet by remember { mutableStateOf(false) }
     val attachmentPickerActions = rememberChatAttachmentPickerActions(
@@ -313,183 +316,191 @@ private fun ChatPageContent(
 
     TTSAutoPlay(vm = vm, setting = setting, conversation = conversation)
 
-    Surface(
-        color = MaterialTheme.colorScheme.background,
-        modifier = Modifier.fillMaxSize()
-    ) {
-        AssistantBackground(setting = setting, modifier = Modifier.hazeSource(hazeState))
-        Scaffold(
-            topBar = {
-                TopBar(
-                    settings = setting,
-                    assistant = assistant,
-                    chatModel = currentChatModel,
-                    conversation = conversation,
-                    bigScreen = bigScreen,
-                    drawerState = drawerState,
-                    previewMode = previewMode,
-                    onNewChat = {
-                        navigateToChatPage(navController)
-                    },
-                    onClickMenu = {
-                        previewMode = !previewMode
-                    },
-                    onUpdateTitle = {
-                        vm.updateTitle(it)
-                    }
-                )
-            },
-            bottomBar = {
-                val messageQueue by vm.messageQueue.collectAsStateWithLifecycle()
-                val voiceState by vm.voiceSession.state.collectAsStateWithLifecycle()
-                ChatInput(
-                    onStartVoiceMode = onStartVoiceMode,
-                    voiceState = voiceState,
-                    onStopVoiceMode = vm.voiceSession::stop,
-                    state = inputState,
-                    messageQueue = messageQueue,
-                    onRemoveQueuedMessage = vm::removeQueuedMessage,
-                    onBeginEditQueuedMessage = vm::beginEditQueuedMessage,
-                    onFinishEditQueuedMessage = vm::finishEditQueuedMessage,
-                    onResumeMessageQueue = vm::resumeMessageQueue,
-                    loading = loadingJob != null,
-                    settings = setting,
-                    assistant = assistant,
-                    chatModel = currentChatModel,
-                    hazeState = hazeState,
-                    completionProviders = completionProviders,
-                    onCancelClick = {
-                        vm.stopGeneration()
-                    },
-                    onUpdateSearchMode = { mode ->
-                        vm.updateSearch(
-                            enableWebSearch = mode == SearchMode.LOCAL,
-                            builtInSearch = mode == SearchMode.BUILT_IN,
+    WorkspaceTasksDrawer(conversation.id.toString(), taskDrawerState) {
+        Surface(
+            color = MaterialTheme.colorScheme.background,
+            modifier = Modifier.fillMaxSize()
+        ) {
+            AssistantBackground(setting = setting, modifier = Modifier.hazeSource(hazeState))
+            Scaffold(
+                topBar = {
+                    TopBar(
+                        settings = setting,
+                        assistant = assistant,
+                        chatModel = currentChatModel,
+                        conversation = conversation,
+                        bigScreen = bigScreen,
+                        drawerState = drawerState,
+                        previewMode = previewMode,
+                        onNewChat = {
+                            navigateToChatPage(navController)
+                        },
+                        onClickMenu = {
+                            previewMode = !previewMode
+                        },
+                        onUpdateTitle = {
+                            vm.updateTitle(it)
+                        },
+                        onOpenTasks = { scope.launch { taskDrawerState.open() } },
+                    )
+                },
+                bottomBar = {
+                    val messageQueue by vm.messageQueue.collectAsStateWithLifecycle()
+                    val voiceState by vm.voiceSession.state.collectAsStateWithLifecycle()
+                    Column {
+                        ChatInput(
+                            onStartVoiceMode = onStartVoiceMode,
+                            voiceState = voiceState,
+                            onStopVoiceMode = vm.voiceSession::stop,
+                            state = inputState,
+                            messageQueue = messageQueue.copy(messages = messageQueue.messages.filter {
+                                it.backgroundTaskId ==
+                                    null
+                            }),
+                            onRemoveQueuedMessage = vm::removeQueuedMessage,
+                            onBeginEditQueuedMessage = vm::beginEditQueuedMessage,
+                            onFinishEditQueuedMessage = vm::finishEditQueuedMessage,
+                            onResumeMessageQueue = vm::resumeMessageQueue,
+                            loading = loadingJob != null,
+                            settings = setting,
+                            assistant = assistant,
+                            chatModel = currentChatModel,
+                            hazeState = hazeState,
+                            completionProviders = completionProviders,
+                            onCancelClick = {
+                                vm.stopGeneration()
+                            },
+                            onUpdateSearchMode = { mode ->
+                                vm.updateSearch(
+                                    enableWebSearch = mode == SearchMode.LOCAL,
+                                    builtInSearch = mode == SearchMode.BUILT_IN,
+                                )
+                            },
+                            onSendClick = {
+                                if (currentChatModel == null) {
+                                    toaster.show("请先选择模型", type = ToastType.Error)
+                                    return@ChatInput
+                                }
+                                if (inputState.isEditing()) {
+                                    vm.handleMessageEdit(
+                                        parts = inputState.getContents(),
+                                        messageId = inputState.editingMessage!!,
+                                    )
+                                } else {
+                                    vm.handleMessageSend(inputState.getContents())
+                                    scope.launch {
+                                        delay(100.milliseconds)
+                                        chatListState.requestScrollToItem(conversation.currentMessages.size + 5)
+                                    }
+                                }
+                                inputState.clearInput()
+                            },
+                            onLongSendClick = {
+                                if (inputState.isEditing()) {
+                                    vm.handleMessageEdit(
+                                        parts = inputState.getContents(),
+                                        messageId = inputState.editingMessage!!,
+                                    )
+                                } else {
+                                    vm.handleMessageSend(content = inputState.getContents(), answer = false)
+                                    scope.launch {
+                                        chatListState.requestScrollToItem(conversation.currentMessages.size + 5)
+                                    }
+                                }
+                                inputState.clearInput()
+                            },
+                            onUpdateChatModel = vm::setChatModel,
+                            onUpdateAssistant = vm::updateAssistant,
+                            onUpdateSearchService = { index ->
+                                vm.updateSettings { it.copy(searchServiceSelected = index) }
+                            },
+                            onMoreClick = {
+                                showFilesSheet = true
+                            },
                         )
+                    }
+                },
+                containerColor = Color.Transparent,
+            ) { innerPadding ->
+                ChatList(
+                    innerPadding = innerPadding,
+                    conversation = conversation,
+                    state = chatListState,
+                    loading = loadingJob != null,
+                    processingStatus = processingStatus,
+                    previewMode = previewMode,
+                    settings = setting,
+                    hazeState = hazeState,
+                    errors = errors,
+                    onDismissError = onDismissError,
+                    onClearAllErrors = onClearAllErrors,
+                    onRegenerate = {
+                        vm.regenerateAtMessage(it)
                     },
-                    onSendClick = {
-                        if (currentChatModel == null) {
-                            toaster.show("请先选择模型", type = ToastType.Error)
-                            return@ChatInput
+                    onEdit = {
+                        inputState.editingMessage = it.id
+                        inputState.setContents(it.parts)
+                    },
+                    onForkMessage = {
+                        scope.launch {
+                            val fork = vm.forkMessage(message = it)
+                            navigateToChatPage(navController, chatId = fork.id)
                         }
-                        if (inputState.isEditing()) {
-                            vm.handleMessageEdit(
-                                parts = inputState.getContents(),
-                                messageId = inputState.editingMessage!!,
-                            )
+                    },
+                    onDelete = {
+                        if (loadingJob != null) {
+                            vm.showDeleteBlockedWhileGeneratingError()
                         } else {
-                            vm.handleMessageSend(inputState.getContents())
-                            scope.launch {
-                                delay(100.milliseconds)
-                                chatListState.requestScrollToItem(conversation.currentMessages.size + 5)
-                            }
+                            vm.deleteMessage(it)
                         }
-                        inputState.clearInput()
                     },
-                    onLongSendClick = {
-                        if (inputState.isEditing()) {
-                            vm.handleMessageEdit(
-                                parts = inputState.getContents(),
-                                messageId = inputState.editingMessage!!,
-                            )
-                        } else {
-                            vm.handleMessageSend(content = inputState.getContents(), answer = false)
-                            scope.launch {
-                                chatListState.requestScrollToItem(conversation.currentMessages.size + 5)
-                            }
+                    onUpdateMessage = { newNode ->
+                        vm.selectMessageNode(newNode.id, newNode.selectIndex)
+                    },
+                    onClickSuggestion = { suggestion ->
+                        inputState.editingMessage = null
+                        inputState.setMessageText(suggestion)
+                    },
+                    onTranslate = { message, locale ->
+                        vm.translateMessage(message, locale)
+                    },
+                    onClearTranslation = { message ->
+                        vm.clearTranslationField(message.id)
+                    },
+                    onJumpToMessage = { index ->
+                        previewMode = false
+                        scope.launch {
+                            chatListState.requestScrollToItem(index)
                         }
-                        inputState.clearInput()
                     },
-                    onUpdateChatModel = vm::setChatModel,
-                    onUpdateAssistant = vm::updateAssistant,
-                    onUpdateSearchService = { index ->
-                        vm.updateSettings { it.copy(searchServiceSelected = index) }
+                    onToolApproval = { toolCallId, approved, reason ->
+                        vm.handleToolApproval(toolCallId, approved, reason)
                     },
-                    onMoreClick = {
-                        showFilesSheet = true
+                    onToolAnswer = { toolCallId, answer ->
+                        vm.handleToolAnswer(toolCallId, answer)
+                    },
+                    onToggleFavorite = { node ->
+                        vm.toggleMessageFavorite(node)
+                    },
+                    onConversationSystemPromptChange = { newPrompt ->
+                        vm.updateConversationSystemPrompt(newPrompt)
                     },
                 )
-            },
-            containerColor = Color.Transparent,
-        ) { innerPadding ->
-            ChatList(
-                innerPadding = innerPadding,
-                conversation = conversation,
-                state = chatListState,
-                loading = loadingJob != null,
-                processingStatus = processingStatus,
-                previewMode = previewMode,
-                settings = setting,
-                hazeState = hazeState,
-                errors = errors,
-                onDismissError = onDismissError,
-                onClearAllErrors = onClearAllErrors,
-                onRegenerate = {
-                    vm.regenerateAtMessage(it)
-                },
-                onEdit = {
-                    inputState.editingMessage = it.id
-                    inputState.setContents(it.parts)
-                },
-                onForkMessage = {
-                    scope.launch {
-                        val fork = vm.forkMessage(message = it)
-                        navigateToChatPage(navController, chatId = fork.id)
-                    }
-                },
-                onDelete = {
-                    if (loadingJob != null) {
-                        vm.showDeleteBlockedWhileGeneratingError()
-                    } else {
-                        vm.deleteMessage(it)
-                    }
-                },
-                onUpdateMessage = { newNode ->
-                    vm.selectMessageNode(newNode.id, newNode.selectIndex)
-                },
-                onClickSuggestion = { suggestion ->
-                    inputState.editingMessage = null
-                    inputState.setMessageText(suggestion)
-                },
-                onTranslate = { message, locale ->
-                    vm.translateMessage(message, locale)
-                },
-                onClearTranslation = { message ->
-                    vm.clearTranslationField(message.id)
-                },
-                onJumpToMessage = { index ->
-                    previewMode = false
-                    scope.launch {
-                        chatListState.requestScrollToItem(index)
-                    }
-                },
-                onToolApproval = { toolCallId, approved, reason ->
-                    vm.handleToolApproval(toolCallId, approved, reason)
-                },
-                onToolAnswer = { toolCallId, answer ->
-                    vm.handleToolAnswer(toolCallId, answer)
-                },
-                onToggleFavorite = { node ->
-                    vm.toggleMessageFavorite(node)
-                },
-                onConversationSystemPromptChange = { newPrompt ->
-                    vm.updateConversationSystemPrompt(newPrompt)
-                },
-            )
-        }
+            }
 
-        if (showFilesSheet) {
-            ChatFilesPickerSheet(
-                inputState = inputState,
-                setting = setting,
-                conversation = conversation,
-                assistant = assistant,
-                chatModel = currentChatModel,
-                vm = vm,
-                attachmentPickerActions = attachmentPickerActions,
-                onStartVoiceMode = onStartVoiceMode,
-                onDismiss = { showFilesSheet = false },
-            )
+            if (showFilesSheet) {
+                ChatFilesPickerSheet(
+                    inputState = inputState,
+                    setting = setting,
+                    conversation = conversation,
+                    assistant = assistant,
+                    chatModel = currentChatModel,
+                    vm = vm,
+                    attachmentPickerActions = attachmentPickerActions,
+                    onStartVoiceMode = onStartVoiceMode,
+                    onDismiss = { showFilesSheet = false },
+                )
+            }
         }
     }
 }
@@ -552,7 +563,9 @@ private fun ChatFilesPickerSheet(
                     keyboardController?.hide()
                     onStartVoiceMode()
                 }
-            } else null,
+            } else {
+                null
+            },
         )
     }
 }
@@ -568,6 +581,7 @@ private fun TopBar(
     previewMode: Boolean,
     onClickMenu: () -> Unit,
     onNewChat: () -> Unit,
+    onOpenTasks: () -> Unit,
     onUpdateTitle: (String) -> Unit
 ) {
     val scope = rememberCoroutineScope()
@@ -611,7 +625,11 @@ private fun TopBar(
                     )
                     if (chatModel != null && provider != null) {
                         Text(
-                            text = "${assistant.name.ifBlank { stringResource(R.string.assistant_page_default_assistant) }} / ${chatModel.displayName} (${provider.name})",
+                            text = "${assistant.name.ifBlank {
+                                stringResource(
+                                    R.string.assistant_page_default_assistant
+                                )
+                            }} / ${chatModel.displayName} (${provider.name})",
                             overflow = TextOverflow.Ellipsis,
                             maxLines = 1,
                             color = LocalContentColor.current.copy(0.65f),
@@ -639,6 +657,7 @@ private fun TopBar(
             ) {
                 Icon(HugeIcons.MessageAdd01, "New Message")
             }
+            WorkspaceTasksButton(conversation.id.toString(), onClick = onOpenTasks)
         },
     )
     titleState.EditStateContent { title, onUpdate ->

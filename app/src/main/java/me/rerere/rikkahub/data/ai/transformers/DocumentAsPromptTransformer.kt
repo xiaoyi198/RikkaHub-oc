@@ -25,15 +25,13 @@ object DocumentAsPromptTransformer : InputMessageTransformer {
                         if (documents.isNotEmpty()) {
                             documents.forEach { document ->
                                 val content = readDocumentContent(document)
-                                val path = resolveWorkspacePath(document)
-                                val pathAttr = path?.let { " path=\"$it\"" } ?: ""
                                 val prompt = """
-                                  <UploadFile name="${document.fileName}"$pathAttr>
+                                  <UploadFile name="${document.fileName}">
                                   ```
                                   $content
                                   ```
                                   </UploadFile>
-                                  """.trimMargin()
+                                """.trimMargin()
                                 add(0, UIMessagePart.Text(prompt))
                             }
                         }
@@ -59,14 +57,6 @@ object DocumentAsPromptTransformer : InputMessageTransformer {
         return EpubParser.parse(file)
     }
 
-    // 上传文件保存在 filesDir/upload 下, 该目录通过 proot 挂载到 workspace 的 /upload
-    // 返回文件在 workspace 内的绝对路径, 便于 AI 用 workspace 工具直接读取原始文件
-    private fun resolveWorkspacePath(document: UIMessagePart.Document): String? {
-        val file = runCatching { document.url.toUri().toFile() }.getOrNull() ?: return null
-        if (file.parentFile?.name != "upload") return null
-        return "/upload/${file.name}"
-    }
-
     internal fun readDocumentContent(document: UIMessagePart.Document): String {
         val file = runCatching { document.url.toUri().toFile() }.getOrNull()
             ?: return "[ERROR, invalid file uri: ${document.fileName}]"
@@ -79,10 +69,33 @@ object DocumentAsPromptTransformer : InputMessageTransformer {
                 "application/vnd.openxmlformats-officedocument.wordprocessingml.document" -> parseDocxAsText(file)
                 "application/vnd.openxmlformats-officedocument.presentationml.presentation" -> parsePptxAsText(file)
                 "application/epub+zip" -> parseEpubAsText(file)
-                else -> file.readText()
+                else -> readAttachmentText(file)
+                    ?: "[Binary attachment: use workspace tools to inspect or process the original file.]"
             }
         }.getOrElse {
             "[ERROR, failed to read file: ${document.fileName}]"
         }
     }
 }
+
+/** Decode bounded UTF-8 text; binary attachments never enter the model as replacement-character garbage. */
+internal fun readAttachmentText(file: File, maxChars: Int = 512 * 1024): String? = runCatching {
+    val decoder = Charsets.UTF_8.newDecoder()
+        .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+        .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
+    java.io.InputStreamReader(file.inputStream(), decoder).use { reader ->
+        val text = StringBuilder()
+        val buffer = CharArray(8192)
+        while (text.length < maxChars) {
+            val count = reader.read(buffer, 0, minOf(buffer.size, maxChars - text.length))
+            if (count < 0) return@use text.toString()
+            if ((0 until count).any { buffer[it] < ' ' && buffer[it] !in "\n\r\t\u000c" }) return@use null
+            text.append(buffer, 0, count)
+        }
+        if (reader.read() >=
+            0) {
+            text.append("\n[Attachment text truncated; read the original file with workspace tools.]")
+        }
+        text.toString()
+    }
+}.getOrNull()

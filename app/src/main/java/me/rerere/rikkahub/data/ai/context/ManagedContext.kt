@@ -51,7 +51,11 @@ class ManagedContext(
         latestGeneratedMessageId = message.id.toString()
         latestGeneratedFrom = newPartsFrom
         val input = message.lastRequestUsage()?.promptTokens ?: return
-        if (lastEstimate > 0 && input > 0) measuredFactor = maxOf(measuredFactor, input.toDouble() / lastEstimate)
+        if (lastEstimate > 0 && input > 0) {
+            val measured = (input.toDouble() / lastEstimate).coerceAtLeast(0.5)
+            // Raise immediately for safety; correct overestimation gradually instead of ignoring it.
+            measuredFactor = if (measured >= measuredFactor) measured else measuredFactor * 0.7 + measured * 0.3
+        }
     }
 
     suspend fun prepare(
@@ -66,9 +70,13 @@ class ManagedContext(
         if (recallAvailable) repository.index(conversationId, messages)
         // Explicit user-created legacy checkpoints still define the beginning of active context.
         val units = contextUnits(messages.limitContext(0))
+        // Keep pruning decisions tied to canonical ranges. Summarizing part of an approved
+        // batch must not bring the remaining cleared results back into the next request.
+        val originalItems = units.map { ContextItem(it.message, listOf(it.source)) }
         val budget = contextBudget(window, maxOutput, settings)
         if (summaries == null) summaries = repository.getAll(conversationId)
         var changed = false
+        var automaticCompression = false
         var attempts = 0
         while (true) {
             val items = projectContext(units, checkNotNull(summaries), recallAvailable)
@@ -80,9 +88,9 @@ class ManagedContext(
                 recallAvailable,
                 latestGeneratedMessageId,
                 latestGeneratedFrom,
+                originalItems,
             )
             if (pruned.sources != prunedSources) {
-                measuredFactor = 1.0
                 prunedSources = pruned.sources
                 if (pruned.toolCount > 0) {
                     status.value = "已裁剪 ${pruned.toolCount} 个旧工具结果，约释放 ${pruned.tokensSaved} tokens"
@@ -92,8 +100,16 @@ class ManagedContext(
             val estimated = estimateStep(step)
             val tailStart = tailStart(items, budget.recent, keepRecentMessages)
             val firstRaw = items.take(tailStart).indexOfFirst { it.summary == null }
-            val due = estimated > budget.trigger && settings.autoCompress
-            if ((!force || (firstRaw < 0 && changed)) && !due) {
+            if (settings.autoCompress && estimated > budget.trigger) automaticCompression = true
+            val due = automaticCompression && estimated > budget.target
+            val requested = force && (!changed || firstRaw >= 0)
+            val canReduce = tailStart > 0 && (firstRaw >= 0 || tailStart > 1)
+            if (force && !changed && firstRaw < 0 && keepRecentMessages != null) {
+                error("没有可压缩的历史。请减少保留的近期消息数。")
+            }
+            // The protected tail or fixed prompts can make the target unreachable. Once safely
+            // below the trigger, keep them rather than repeatedly rewriting a lone summary.
+            if ((!requested && !due) || (changed && !canReduce && estimated <= budget.trigger)) {
                 if (estimated > budget.input) error("上下文超过可用预算。请启用自动压缩、手动压缩，或调整模型容量与近期保留预算。")
                 if (force && !changed) error("没有可压缩的历史。请减少保留的近期消息数。")
                 lastEstimate = estimateStep(step, calibrated = false)
@@ -101,12 +117,14 @@ class ManagedContext(
             }
             check(tailStart > 0) { "最近一轮内容已经超过上下文预算，无法在保留完整工具结果的情况下继续。请调整保留预算或使用更大上下文的模型。" }
             check(attempts++ < 32) { "本次压缩次数已达上限，请手动分批压缩历史。" }
-            val start = if (force && firstRaw >= 0) firstRaw else 0
+            // Append summaries for new raw ranges before merging existing summaries.
+            val start = firstRaw.takeIf { it >= 0 } ?: 0
             val candidate = mutableListOf<ContextItem>()
             var candidateTokens = 0
-            val chunkBudget = minOf(20_000, budget.input / 3).coerceAtLeast(256)
+            val chunkBudget = budget.chunk
             for (index in start until tailStart) {
                 val item = items[index]
+                if (firstRaw >= 0 && item.summary != null && candidateTokens >= 256) break
                 val size = estimateContextMessage(item.message)
                 if (candidate.isNotEmpty() && candidateTokens + size > chunkBudget &&
                     candidateTokens >= 256 &&
@@ -146,8 +164,6 @@ class ManagedContext(
             }
             check(persist(summary)) { "压缩期间对话内容发生变化，摘要未应用。" }
             summaries = checkNotNull(summaries) + summary
-            // A different projection invalidates usage measured against the previous request.
-            measuredFactor = 1.0
             changed = true
             status.value = "上下文已压缩：约 ${summary.tokensBefore} → ${summary.tokensAfter} tokens"
         }

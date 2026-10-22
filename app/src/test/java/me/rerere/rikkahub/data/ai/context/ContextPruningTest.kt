@@ -156,13 +156,45 @@ class ContextPruningTest {
     @Test
     fun `protection budgets adapt to small windows and support large windows without overflow`() {
         val defaults = ContextManagementSettings()
-        assertEquals(PruneBudget(40_000, 20_000), contextPruneBudget(120_000, defaults))
+        assertEquals(PruneBudget(48_000, 24_000), contextPruneBudget(120_000, defaults))
         assertEquals(PruneBudget(1200, 600), contextPruneBudget(3000, defaults))
         assertEquals(
             PruneBudget(1500, 1500),
             contextPruneBudget(3000, settings.copy(pruneProtectTokens = 40_000, pruneMinimumTokens = 20_000))
         )
-        assertEquals(PruneBudget(40_000, 20_000), contextPruneBudget(Int.MAX_VALUE, defaults))
+        assertEquals(
+            PruneBudget(858_993_458, 429_496_729),
+            contextPruneBudget(Int.MAX_VALUE, defaults)
+        )
+    }
+
+    @Test
+    fun `summarizing part of a pruned batch does not restore the remaining outputs`() {
+        val messages = listOf(
+            UIMessage.user("old task"),
+            assistant(*Array(18) { tool("call-$it", text = "x".repeat(3000)) }),
+        ) + history().takeLast(3)
+        val config = ContextManagementSettings(enabled = true, prune = true)
+        val originalItems = project(messages)
+        val before = pruneContext(originalItems, messages, config, 26_400, true)
+        val summary = ContextSummary(
+            conversationId = "c",
+            text = "old findings",
+            sources = contextUnits(messages).take(5).map { it.source },
+            tokensBefore = 4000,
+            tokensAfter = 4,
+        )
+        val projected = projectContext(contextUnits(messages), listOf(summary))
+        val after = pruneContext(projected, messages, config, 26_400, true, originalItems = originalItems)
+        assertEquals(7, before.toolCount)
+        assertEquals(3, after.toolCount)
+        val remaining = after.items.flatMap { it.message.getTools() }.first { it.toolCallId == "call-4" }
+        assertTrue(remaining.output.toString().contains("Old tool result content cleared"))
+        assertEquals("x".repeat(3000), (messages[1].getTools()[4].output.single() as UIMessagePart.Text).text)
+        assertTrue(
+            after.items.sumOf { estimateContextMessage(it.message) } <
+                before.items.sumOf { estimateContextMessage(it.message) }
+        )
     }
 
     @Test

@@ -17,6 +17,8 @@ import me.rerere.rikkahub.data.repository.MemoryRepository
 import me.rerere.rikkahub.data.repository.WorkspaceRepository
 import me.rerere.rikkahub.data.repository.memoryId
 import me.rerere.rikkahub.data.skills.SkillManager
+import me.rerere.rikkahub.service.WorkspaceTaskManager
+import me.rerere.rikkahub.utils.JsonInstant
 import me.rerere.workspace.WorkspaceShellStatus
 import java.io.File
 import kotlin.uuid.Uuid
@@ -44,14 +46,18 @@ class ChatToolFactory(
     private val mcpManager: McpManager,
     private val skillManager: SkillManager,
     private val workspaceRepository: WorkspaceRepository,
+    private val workspaceTaskManager: WorkspaceTaskManager,
 ) {
     suspend fun createTools(
         settings: Settings,
         assistant: Assistant,
         model: Model,
         workspaceCwd: String? = null,
+        conversationId: Uuid? = null,
+        attachmentFiles: List<String> = emptyList(),
+        sourceMessageId: () -> String? = { null },
     ): List<Tool> {
-        val workspaceTools = createWorkspaceToolsIfReady(assistant.workspaceId?.toString(), workspaceCwd)
+        val workspaceTools = createWorkspaceToolsIfReady(assistant.workspaceId?.toString(), workspaceCwd, conversationId?.toString(), sourceMessageId, attachmentFiles)
         val tools = buildList {
             if (assistant.enableMemory) {
                 addAll(buildMemoryTools(memoryRepository, assistant.memoryId))
@@ -103,9 +109,16 @@ class ChatToolFactory(
     }
 
     private fun withOutputTruncation(tool: Tool): Tool {
-        if (tool.name in TOOLS_WITHOUT_OUTPUT_TRUNCATION) return tool
+        // Managed task output is already bounded and paged. Preserve its structured taskId/cursor.
+        if (tool.name in TOOLS_WITHOUT_OUTPUT_TRUNCATION || tool.name.startsWith("workspace_task_")) return tool
         val execute = tool.execute
-        return tool.copy(execute = { truncateOutput(execute(it)) })
+        return tool.copy(execute = {
+            val output = execute(it)
+            val managed = tool.name == "workspace_shell" && output.filterIsInstance<UIMessagePart.Text>().any { part ->
+                runCatching { JsonInstant.parseToJsonElement(part.text).jsonObject.containsKey("taskId") }.getOrDefault(false)
+            }
+            if (managed) output else truncateOutput(output)
+        })
     }
 
     private fun truncateOutput(output: List<UIMessagePart>): List<UIMessagePart> {
@@ -133,7 +146,7 @@ class ChatToolFactory(
         ) + output.filter { it !is UIMessagePart.Text }
     }
 
-    private suspend fun createWorkspaceToolsIfReady(workspaceId: String?, cwd: String?): List<Tool> {
+    private suspend fun createWorkspaceToolsIfReady(workspaceId: String?, cwd: String?, conversationId: String?, sourceMessageId: () -> String?, attachmentFiles: List<String>): List<Tool> {
         if (workspaceId.isNullOrBlank()) return emptyList()
         val workspace = workspaceRepository.getById(workspaceId) ?: return emptyList()
         if (workspace.shellStatus != WorkspaceShellStatus.READY.name) {
@@ -143,6 +156,6 @@ class ChatToolFactory(
             )
             return emptyList()
         }
-        return createWorkspaceTools(workspaceId, workspaceRepository, cwd)
+        return createWorkspaceTools(workspaceId, workspaceRepository, cwd, workspaceTaskManager, conversationId, sourceMessageId, attachmentFiles)
     }
 }

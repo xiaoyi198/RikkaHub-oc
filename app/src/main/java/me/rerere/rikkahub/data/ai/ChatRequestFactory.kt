@@ -8,17 +8,22 @@ import me.rerere.ai.agent.AgentRequest
 import me.rerere.ai.agent.RetryPolicy
 import me.rerere.ai.agent.StepRequest
 import me.rerere.ai.agent.withRetry
+import me.rerere.ai.core.MessageRole
 import me.rerere.ai.core.ReasoningLevel
 import me.rerere.ai.core.Tool
+import me.rerere.ai.provider.Modality
 import me.rerere.ai.provider.Model
+import me.rerere.ai.provider.ModelAbility
 import me.rerere.ai.provider.ProviderManager
 import me.rerere.ai.provider.ProviderSetting
 import me.rerere.ai.provider.TextGenerationParams
-import me.rerere.ai.provider.Modality
-import me.rerere.ai.provider.ModelAbility
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.limitContext
 import me.rerere.rikkahub.R
+import me.rerere.rikkahub.data.ai.context.ContextHistory
+import me.rerere.rikkahub.data.ai.context.ManagedContext
+import me.rerere.rikkahub.data.ai.context.contextBudget
+import me.rerere.rikkahub.data.ai.context.estimateContextText
 import me.rerere.rikkahub.data.ai.prompts.buildMemoryPrompt
 import me.rerere.rikkahub.data.ai.tools.ChatToolFactory
 import me.rerere.rikkahub.data.ai.tools.contextTextWithinBudget
@@ -34,28 +39,26 @@ import me.rerere.rikkahub.data.ai.transformers.RegexOutputTransformer
 import me.rerere.rikkahub.data.ai.transformers.TemplateTransformer
 import me.rerere.rikkahub.data.ai.transformers.ThinkTagTransformer
 import me.rerere.rikkahub.data.ai.transformers.TimeReminderTransformer
+import me.rerere.rikkahub.data.ai.transformers.UploadedAttachmentTransformer
 import me.rerere.rikkahub.data.ai.transformers.WorkspaceReminderTransformer
 import me.rerere.rikkahub.data.ai.transformers.onGenerationFinish
 import me.rerere.rikkahub.data.ai.transformers.transformThinkTags
 import me.rerere.rikkahub.data.ai.transformers.transforms
 import me.rerere.rikkahub.data.ai.transformers.visualTransforms
-import me.rerere.rikkahub.data.ai.context.ContextHistory
-import me.rerere.rikkahub.data.ai.context.ManagedContext
-import me.rerere.rikkahub.data.ai.context.contextBudget
-import me.rerere.rikkahub.data.ai.context.estimateContextText
 import me.rerere.rikkahub.data.datastore.Settings
-import me.rerere.rikkahub.data.datastore.findProvider
 import me.rerere.rikkahub.data.datastore.findModelById
+import me.rerere.rikkahub.data.datastore.findProvider
+import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.model.Assistant
+import me.rerere.rikkahub.data.model.ContextSummary
 import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.model.MemoryFile
 import me.rerere.rikkahub.data.model.getAssistantOf
 import me.rerere.rikkahub.data.model.getChatModelOf
-import me.rerere.rikkahub.data.model.ContextSummary
+import me.rerere.rikkahub.data.repository.ContextSummaryRepository
 import me.rerere.rikkahub.data.repository.MemoryRepository
 import me.rerere.rikkahub.data.repository.WorkspaceRepository
 import me.rerere.rikkahub.data.repository.memoryId
-import me.rerere.rikkahub.data.repository.ContextSummaryRepository
 import kotlin.time.Clock
 import kotlin.uuid.Uuid
 
@@ -78,6 +81,7 @@ class ChatTurnContext(
     val memories: List<MemoryFile>,
     val tools: List<Tool>,
     val contextHistory: ContextHistory? = null,
+    val workspaceSource: java.util.concurrent.atomic.AtomicReference<String?> = java.util.concurrent.atomic.AtomicReference(null),
 )
 
 /** 把会话变成发给模型的请求：系统提示词、上下文裁剪、输入输出转换都在这里 */
@@ -89,12 +93,14 @@ class ChatRequestFactory(
     private val memoryRepository: MemoryRepository,
     templateTransformer: TemplateTransformer,
     workspaceRepository: WorkspaceRepository,
+    filesManager: FilesManager,
     private val contextSummaryRepository: ContextSummaryRepository,
 ) {
     private val inputTransformers: List<InputMessageTransformer> = listOf(
         TimeReminderTransformer,
         PromptInjectionTransformer,
         PlaceholderTransformer,
+        UploadedAttachmentTransformer(workspaceRepository, filesManager),
         DocumentAsPromptTransformer,
         OcrTransformer,
         templateTransformer,
@@ -115,7 +121,8 @@ class ChatRequestFactory(
             ?: throw IllegalStateException("No chat model selected")
         val provider = model.findProvider(settings.providers) ?: error("Provider not found")
         val history = if (settings.contextManagement.enabled) ContextHistory(conversation.currentMessages) else null
-        val tools = chatToolFactory.createTools(settings, assistant, model, conversation.workspaceCwd)
+        val workspaceSource = java.util.concurrent.atomic.AtomicReference(conversation.currentMessages.lastOrNull()?.takeIf { it.role == MessageRole.ASSISTANT }?.id?.toString())
+        val tools = chatToolFactory.createTools(settings, assistant, model, conversation.workspaceCwd, conversation.id, conversation.files.map { it.toString() }) { workspaceSource.get() }
         val historyTools = if (history != null && settings.contextManagement.historyTools && ModelAbility.TOOL in model.abilities) {
             createContextHistoryTools(
                 conversationId = conversation.id.toString(),
@@ -124,7 +131,9 @@ class ChatRequestFactory(
                 maxRecallTokens = minOf(settings.contextManagement.recallTokens, (model.contextLength / 8).coerceAtLeast(256)),
                 allowImages = Modality.IMAGE in model.inputModalities,
             )
-        } else emptyList()
+        } else {
+            emptyList()
+        }
         return ChatTurnContext(
             settings = settings,
             assistant = assistant,
@@ -136,6 +145,7 @@ class ChatRequestFactory(
             memories = if (assistant.enableMemory) memoryRepository.getFiles(assistant.memoryId) else emptyList(),
             tools = tools + historyTools,
             contextHistory = history,
+            workspaceSource = workspaceSource,
         )
     }
 
@@ -161,9 +171,13 @@ class ChatRequestFactory(
             tools = turn.tools,
             stream = turn.assistant.streamOutput,
             retry = turn.settings.retryPolicy().let { policy ->
-                if (managed == null) policy else policy.copy(retryOn = { error ->
-                    !me.rerere.rikkahub.data.ai.context.isContextOverflow(error) && policy.retryOn(error)
-                })
+                if (managed == null) {
+                    policy
+                } else {
+                    policy.copy(retryOn = { error ->
+                        !me.rerere.rikkahub.data.ai.context.isContextOverflow(error) && policy.retryOn(error)
+                    })
+                }
             },
         )
         val hooks = object : AgentHooks {
@@ -176,7 +190,9 @@ class ChatRequestFactory(
             override suspend fun recoverContext(messages: List<UIMessage>, error: Throwable): StepRequest? {
                 if (managed == null || !turn.settings.contextManagement.autoCompress ||
                     !me.rerere.rikkahub.data.ai.context.isContextOverflow(error)
-                ) return null
+                ) {
+                    return null
+                }
                 return managed.prepare(
                     messages,
                     build = { buildStep(turn, it, processingStatus, limitMessages = false) },
@@ -184,12 +200,15 @@ class ChatRequestFactory(
                 )
             }
 
-            override suspend fun previewStep(message: UIMessage, newPartsFrom: Int) =
-                message.transformNewParts(newPartsFrom) {
+            override suspend fun previewStep(message: UIMessage, newPartsFrom: Int): UIMessage {
+                turn.workspaceSource.set(message.id.toString())
+                return message.transformNewParts(newPartsFrom) {
                     it.visualTransforms(outputTransformers, context, turn.model, turn.assistant, turn.settings)
                 }
+            }
 
             override suspend fun finishStep(message: UIMessage, newPartsFrom: Int): UIMessage {
+                turn.workspaceSource.set(message.id.toString())
                 managed?.recordUsage(message, newPartsFrom)
                 return message.transformNewParts(newPartsFrom) {
                     it.transforms(outputTransformers, context, turn.model, turn.assistant, turn.settings)
@@ -386,8 +405,11 @@ class ChatRequestFactory(
             model = turn.model,
             temperature = assistant.temperature,
             topP = assistant.topP,
-            maxTokens = if (limitMessages) assistant.maxTokens else
-                contextBudget(turn.model.contextLength, assistant.maxTokens, turn.settings.contextManagement).output,
+            maxTokens = if (limitMessages) {
+                assistant.maxTokens
+            } else {
+                contextBudget(turn.model.contextLength, assistant.maxTokens, turn.settings.contextManagement).output
+            },
             tools = turn.tools,
             reasoningLevel = assistant.reasoningLevel,
             customHeaders = buildList {

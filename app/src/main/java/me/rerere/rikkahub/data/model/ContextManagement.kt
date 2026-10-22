@@ -9,7 +9,9 @@ data class ContextManagementSettings(
     val enabled: Boolean = false,
     val autoCompress: Boolean = true,
     val triggerPercent: Int = 80,
+    val targetPercent: Int = 65,
     // Zero means adapt to the selected model's window.
+    val compressionChunkTokens: Int = 0,
     val recentTokens: Int = 0,
     val summaryTokens: Int = 0,
     val summaryModelId: Uuid? = null,
@@ -22,6 +24,8 @@ data class ContextManagementSettings(
 ) {
     fun normalized() = copy(
         triggerPercent = triggerPercent.coerceIn(50, 95),
+        targetPercent = targetPercent.coerceIn(10, triggerPercent.coerceIn(50, 95) - 5),
+        compressionChunkTokens = compressionChunkTokens.coerceIn(0, 1_000_000),
         recentTokens = recentTokens.coerceIn(0, 1_000_000),
         summaryTokens = summaryTokens.coerceIn(0, 32_768),
         recallTokens = recallTokens.coerceIn(256, 32_768),

@@ -201,6 +201,19 @@ class WorkspaceManager(
     ): List<WorkspaceSearchMatch> =
         fileSystem.grep(filesDir(root), query, path, regex, ignoreCase, includeGlob)
 
+    fun startCommand(root: String, command: String, cwd: String = "", shellCompatibilityMode: Boolean = false): WorkspaceProcess {
+        require(command.isNotBlank()) { "Command is required" }
+        ensureWorkspace(root)
+        val workingDir = fileSystem.resolve(filesDir(root), cwd)
+        require(workingDir.isDirectory) { "Working directory does not exist: $cwd" }
+        return shellRunner.start(WorkspaceShellContext(
+            root = root, command = command, cwd = cwd,
+            filesDir = filesDir(root), linuxDir = linuxDir(root), tempDir = tempDir(root),
+            workingDir = workingDir, timeoutMillis = 0, bindMounts = bindMounts,
+            shellCompatibilityMode = shellCompatibilityMode,
+        ))
+    }
+
     fun executeCommand(
         root: String,
         command: String,

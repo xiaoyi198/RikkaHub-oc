@@ -10,17 +10,24 @@ import io.ktor.server.routing.post
 import io.ktor.server.routing.route
 import io.ktor.server.sse.heartbeat
 import io.ktor.server.sse.sse
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.merge
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import me.rerere.ai.provider.ModelType
+import me.rerere.rikkahub.data.ai.tools.workspaceTaskJson
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.datastore.findModelById
 import me.rerere.rikkahub.data.repository.ConversationRepository
 import me.rerere.rikkahub.data.repository.FolderRepository
 import me.rerere.rikkahub.service.ChatService
+import me.rerere.rikkahub.utils.JsonInstant
 import me.rerere.rikkahub.web.BadRequestException
 import me.rerere.rikkahub.web.NotFoundException
 import me.rerere.rikkahub.web.dto.ConversationDto
@@ -30,6 +37,7 @@ import me.rerere.rikkahub.web.dto.EditMessageRequest
 import me.rerere.rikkahub.web.dto.ErrorEvent
 import me.rerere.rikkahub.web.dto.ForkConversationRequest
 import me.rerere.rikkahub.web.dto.ForkConversationResponse
+import me.rerere.rikkahub.web.dto.MessageSearchResultDto
 import me.rerere.rikkahub.web.dto.MoveConversationRequest
 import me.rerere.rikkahub.web.dto.MoveConversationToFolderRequest
 import me.rerere.rikkahub.web.dto.PagedResult
@@ -37,13 +45,11 @@ import me.rerere.rikkahub.web.dto.RegenerateRequest
 import me.rerere.rikkahub.web.dto.SelectMessageNodeRequest
 import me.rerere.rikkahub.web.dto.SendMessageRequest
 import me.rerere.rikkahub.web.dto.ToolApprovalRequest
-import me.rerere.rikkahub.web.dto.MessageSearchResultDto
 import me.rerere.rikkahub.web.dto.UpdateConversationConfigRequest
 import me.rerere.rikkahub.web.dto.UpdateConversationInjectionsRequest
 import me.rerere.rikkahub.web.dto.UpdateConversationTitleRequest
 import me.rerere.rikkahub.web.dto.toDto
 import me.rerere.rikkahub.web.dto.toListDto
-import me.rerere.rikkahub.utils.JsonInstant
 import kotlin.time.Duration.Companion.seconds
 import kotlin.uuid.Uuid
 
@@ -54,6 +60,65 @@ fun Route.conversationRoutes(
     settingsStore: SettingsStore
 ) {
     route("/conversations") {
+        post("/{id}/tasks/stop-all") {
+            val owner = call.parameters["id"]!!.toUuid("id")
+            if (!conversationRepo.existsConversationById(owner)) throw NotFoundException("Conversation not found")
+            chatService.workspaceTaskManager.awaitReady()
+            chatService.workspaceTaskManager.engine.stopOwner(owner.toString())
+            call.respond(HttpStatusCode.OK)
+        }
+        sse("/{id}/tasks/stream") {
+            val owner = call.parameters["id"]!!.toUuid("id")
+            if (!conversationRepo.existsConversationById(owner)) throw NotFoundException("Conversation not found")
+            val manager = chatService.workspaceTaskManager
+            manager.awaitReady()
+            heartbeat { period = 15.seconds }
+            val logTaskId = call.request.queryParameters["logTaskId"]
+            manager.tasks.map { tasks ->
+                tasks.values.filter { it.conversationId == owner.toString() }
+                    .sortedWith(
+                        compareByDescending<me.rerere.workspace.WorkspaceTask> {
+                            it.active
+                        }.thenByDescending { it.startedAt }
+                    )
+                    .take(100)
+                    .map { if (it.id == logTaskId) it else it.copy(output = "") }
+            }.distinctUntilChanged().conflate().collect { tasks ->
+                send(data = JsonArray(tasks.map(::workspaceTaskJson)).toString(), event = "tasks")
+                delay(250) // Conflate noisy stdout updates while keeping controls responsive.
+            }
+        }
+        post("/{id}/tasks/{taskId}/{action}") {
+            val owner = call.parameters["id"]!!.toUuid("id")
+            if (!conversationRepo.existsConversationById(owner)) throw NotFoundException("Conversation not found")
+            val manager = chatService.workspaceTaskManager
+            manager.awaitReady()
+            val id = call.parameters["taskId"]!!
+            if (manager.tasks.value[id]?.conversationId != owner.toString()) throw NotFoundException("Task not found")
+            val task = when (call.parameters["action"]) {
+                "stop" -> manager.engine.stop(id, owner.toString())
+                "background" -> manager.engine.background(id, owner.toString())
+                else -> throw NotFoundException("Unknown task action")
+            }
+            call.respond(workspaceTaskJson(task))
+        }
+        get("/{id}/tasks/{taskId}/output") {
+            val owner = call.parameters["id"]!!.toUuid("id")
+            if (!conversationRepo.existsConversationById(owner)) throw NotFoundException("Conversation not found")
+            val manager = chatService.workspaceTaskManager
+            manager.awaitReady()
+            val id = call.parameters["taskId"]!!
+            if (manager.tasks.value[id]?.conversationId != owner.toString()) throw NotFoundException("Task not found")
+            val cursor = call.request.queryParameters["cursor"]?.toLongOrNull() ?: 0
+            if (cursor < 0) throw BadRequestException("Invalid cursor")
+            val page = manager.engine.output(id, owner.toString(), cursor)
+            call.respond(buildJsonObject {
+                put("output", page.output)
+                put("cursor", page.cursor)
+                put("size", page.size)
+                put("truncated", page.truncated)
+            })
+        }
         // GET /api/conversations - List conversations of current assistant
         get {
             val settings = settingsStore.awaitLoaded()

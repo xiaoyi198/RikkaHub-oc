@@ -63,6 +63,7 @@ import androidx.compose.ui.util.fastForEach
 import androidx.compose.ui.util.fastForEachIndexed
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.debounce
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -89,9 +90,9 @@ import me.rerere.rikkahub.ui.components.ui.ChainOfThought
 import me.rerere.rikkahub.ui.components.ui.Favicon
 import me.rerere.rikkahub.ui.components.ui.FaviconRow
 import me.rerere.rikkahub.ui.context.LocalNavController
-import me.rerere.rikkahub.ui.modifier.shimmer
 import me.rerere.rikkahub.ui.context.LocalSettings
 import me.rerere.rikkahub.ui.context.LocalWorkspaceId
+import me.rerere.rikkahub.ui.modifier.shimmer
 import me.rerere.rikkahub.ui.theme.LocalChatFontFamily
 import me.rerere.rikkahub.ui.theme.rememberChatFontFamily
 import me.rerere.rikkahub.utils.JsonInstant
@@ -125,6 +126,20 @@ fun ChatMessage(
     onToolAnswer: ((toolCallId: String, answer: String) -> Unit)? = null,
 ) {
     val message = node.messages[node.selectIndex]
+    val taskResult = message.parts.firstOrNull { it.metadata?.containsKey("workspaceTaskId") == true }?.metadata
+    if (taskResult != null) {
+        androidx.compose.material3.Surface(
+            modifier = modifier.fillMaxWidth(),
+            shape = MaterialTheme.shapes.large,
+            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        ) {
+            Column(Modifier.padding(12.dp)) {
+                Text(taskResult["workspaceTaskLabel"]?.jsonPrimitive?.contentOrNull ?: "后台任务已结束", style = MaterialTheme.typography.labelLarge)
+                Text(taskResult["workspaceTaskCommand"]?.jsonPrimitive?.contentOrNull.orEmpty(), style = MaterialTheme.typography.bodySmall)
+            }
+        }
+        return
+    }
     if (message.isContextCheckpoint) {
         ChatMessageContextCheckpoint(
             message = message,
@@ -236,7 +251,6 @@ fun ChatMessage(
         ProvideTextStyle(textStyle) {
             ChatMessageNerdLine(message = message)
         }
-
     }
     if (showActionsSheet) {
         ChatMessageActionsSheet(
