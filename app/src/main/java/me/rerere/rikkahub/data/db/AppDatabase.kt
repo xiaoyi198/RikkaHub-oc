@@ -6,6 +6,7 @@ import androidx.room.RoomDatabase
 import androidx.room.TypeConverter
 import androidx.room.TypeConverters
 import me.rerere.ai.core.TokenUsage
+import me.rerere.rikkahub.data.db.dao.ContextPruneBatchDAO
 import me.rerere.rikkahub.data.db.dao.ContextSummaryDAO
 import me.rerere.rikkahub.data.db.dao.ConversationDAO
 import me.rerere.rikkahub.data.db.dao.FavoriteDAO
@@ -20,6 +21,7 @@ import me.rerere.rikkahub.data.db.dao.TranslationHistoryDAO
 import me.rerere.rikkahub.data.db.dao.UsageRecordDAO
 import me.rerere.rikkahub.data.db.dao.WorkspaceDAO
 import me.rerere.rikkahub.data.db.dao.WorkspaceTaskDAO
+import me.rerere.rikkahub.data.db.entity.ContextPruneBatchEntity
 import me.rerere.rikkahub.data.db.entity.ContextSummaryEntity
 import me.rerere.rikkahub.data.db.entity.ConversationEntity
 import me.rerere.rikkahub.data.db.entity.FavoriteEntity
@@ -47,6 +49,7 @@ import me.rerere.rikkahub.utils.JsonInstant
         WorkspaceTaskEntity::class,
         ConversationEntity::class,
         ContextSummaryEntity::class,
+        ContextPruneBatchEntity::class,
         MemoryFileEntity::class,
         MemoryConsolidationEntity::class,
         GenMediaEntity::class,
@@ -61,7 +64,7 @@ import me.rerere.rikkahub.utils.JsonInstant
         TranslationHistoryEntity::class,
         UsageRecordEntity::class,
     ],
-    version = 34,
+    version = 35,
     autoMigrations = [
         AutoMigration(from = 1, to = 2),
         AutoMigration(from = 2, to = 3),
@@ -94,6 +97,8 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun workspaceTaskDao(): WorkspaceTaskDAO
 
     abstract fun contextSummaryDao(): ContextSummaryDAO
+
+    abstract fun contextPruneBatchDao(): ContextPruneBatchDAO
 
     abstract fun conversationDao(): ConversationDAO
 

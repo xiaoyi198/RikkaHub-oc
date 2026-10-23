@@ -99,6 +99,7 @@ internal fun FilesPicker(
     state: ChatInputState,
     mcpManager: McpManager,
     onCompressContext: (additionalPrompt: String, keepRecentMessages: Int) -> Job,
+    onContextInsights: () -> Unit,
     onUpdateAssistant: (Assistant) -> Unit,
     onUpdateWorkspaceCwd: (String?) -> Unit,
     showCompressDialog: Boolean,
@@ -123,7 +124,6 @@ internal fun FilesPicker(
     }
     val showCwd = boundWorkspace != null && boundWorkspace.shellStatus == WorkspaceShellStatus.READY.name
     var showCwdSheet by remember { mutableStateOf(false) }
-    var showContextDetails by remember { mutableStateOf(false) }
 
     var page by remember { mutableStateOf(FilesPickerPage.MAIN) }
     // 在子页面时，返回键回到主页面而不是关闭 sheet
@@ -188,7 +188,7 @@ internal fun FilesPicker(
                 val showMcp = settings.mcpServers.isNotEmpty()
                 // 限制了上下文消息数就是滚动上下文，旧消息会自动移出，不需要压缩
                 val showCompress = settings.contextManagement.enabled || assistant.contextMessageLimit <= 0
-                val showContext = settings.contextManagement.enabled
+                val showContext = true
                 val itemCount = 1 + listOf(showWorkspace, showWorkspace && showCwd, showMcp, showCompress, showContext).count { it }
                 var itemIndex = 0
                 Column(
@@ -321,11 +321,11 @@ internal fun FilesPicker(
                     }
                     if (showContext) {
                         SegmentedListItem(
-                            onClick = { showContextDetails = true },
+                            onClick = onContextInsights,
                             shapes = ListItemDefaults.segmentedShapes(index = itemIndex++, count = itemCount),
                             leadingContent = { Icon(HugeIcons.Package, contentDescription = null) },
                         ) {
-                            Text("查看上下文摘要")
+                            Text("上下文洞察")
                         }
                     }
                 }
@@ -352,17 +352,7 @@ internal fun FilesPicker(
             onDismiss()
         }, onConfirm = onCompressContext, enhanced = settings.contextManagement.enabled)
     }
-    if (showContextDetails && settings.contextManagement.enabled) {
-        ContextSummarySheet(
-            conversation = conversation,
-            onDismiss = { showContextDetails = false },
-            onSettings = {
-                showContextDetails = false
-                onDismiss()
-                navController.navigate(Screen.SettingContext)
-            },
-        )
-    }
+
 }
 
 @Composable

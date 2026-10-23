@@ -189,7 +189,7 @@ fun SettingContextAdvancedPage(vm: SettingVM = koinViewModel()) {
                         headlineContent = { Text("单批最少释放量") },
                         supportingContent = {
                             Text(
-                                "达到此净节省量才裁剪，避免频繁改动请求前缀。0 为自动：约占可用输入预算的 1/5，随上下文窗口等比例增长；手动设置不超过输入预算的一半。"
+                                "平时达到此净节省量才裁剪，避免频繁改动请求前缀。达到压缩触发比例时允许小批裁剪，仍超限才摘要。0 为自动：约占可用输入预算的 1/5；手动设置不超过输入预算的一半。"
                             )
                         },
                     ) {

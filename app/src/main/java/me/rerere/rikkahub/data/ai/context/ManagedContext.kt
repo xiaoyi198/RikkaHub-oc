@@ -9,7 +9,7 @@ import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.ai.ui.limitContext
 import me.rerere.rikkahub.data.model.ContextManagementSettings
-import me.rerere.rikkahub.data.model.ContextSource
+import me.rerere.rikkahub.data.model.ContextPruneBatch
 import me.rerere.rikkahub.data.model.ContextSummary
 import kotlin.math.ceil
 
@@ -26,6 +26,7 @@ class ContextHistory(messages: List<UIMessage>) {
 interface ContextSummaryStore {
     suspend fun getAll(conversationId: String): List<ContextSummary>
     suspend fun index(conversationId: String, messages: List<UIMessage>)
+    suspend fun getPruneBatches(conversationId: String): List<ContextPruneBatch>
 }
 
 class ManagedContext(
@@ -39,13 +40,14 @@ class ManagedContext(
     private val status: MutableStateFlow<String?>,
     private val persist: suspend (ContextSummary) -> Boolean,
     private val summarize: suspend (String, Int) -> String,
+    private val persistPruning: suspend (ContextPruneBatch, List<UIMessage>) -> Boolean,
+    private val inspect: (StepRequest, PrunedContext, List<ContextItem>) -> Unit = { _, _, _ -> },
 ) {
     private var summaries: List<ContextSummary>? = null
     private var measuredFactor = 1.0
     private var lastEstimate = 0
     private var latestGeneratedMessageId: String? = null
     private var latestGeneratedFrom = 0
-    private var prunedSources: Set<ContextSource> = emptySet()
 
     fun recordUsage(message: UIMessage, newPartsFrom: Int) {
         latestGeneratedMessageId = message.id.toString()
@@ -75,29 +77,39 @@ class ManagedContext(
         val originalItems = units.map { ContextItem(it.message, listOf(it.source)) }
         val budget = contextBudget(window, maxOutput, settings)
         if (summaries == null) summaries = repository.getAll(conversationId)
+        val batches = if (settings.prune && recallAvailable) repository.getPruneBatches(conversationId) else emptyList()
         var changed = false
         var automaticCompression = false
         var attempts = 0
         while (true) {
             val items = projectContext(units, checkNotNull(summaries), recallAvailable)
-            val pruned = pruneContext(
-                items,
-                messages,
-                settings,
-                budget.input,
-                recallAvailable,
-                latestGeneratedMessageId,
-                latestGeneratedFrom,
-                originalItems,
+            fun prune(ignoreMinimum: Boolean = false) = pruneContext(
+                items = items,
+                originals = messages,
+                settings = settings,
+                inputBudget = budget.input,
+                recallAvailable = recallAvailable,
+                consumedMessageId = latestGeneratedMessageId,
+                consumedBeforePart = latestGeneratedFrom,
+                originalItems = originalItems,
+                ignoreMinimum = ignoreMinimum,
+                committed = batches.flatMap { it.entries },
             )
-            if (pruned.sources != prunedSources) {
-                prunedSources = pruned.sources
-                if (pruned.toolCount > 0) {
-                    status.value = "已裁剪 ${pruned.toolCount} 个旧工具结果，约释放 ${pruned.tokensSaved} tokens"
+            var pruned = prune()
+            var step = build(pruned.items.map { it.message })
+            var estimated = estimateStep(step)
+            var underPressure = false
+            // Batch size only avoids frequent prefix changes. It must not force a lossy summary
+            // while safe, recoverable tool results could still bring the request below the trigger.
+            if (estimated > budget.trigger || (automaticCompression && estimated > budget.target)) {
+                val smallerBatch = prune(ignoreMinimum = true)
+                if (smallerBatch.newEntries != pruned.newEntries) {
+                    pruned = smallerBatch
+                    underPressure = true
+                    step = build(pruned.items.map { it.message })
+                    estimated = estimateStep(step)
                 }
             }
-            val step = build(pruned.items.map { it.message })
-            val estimated = estimateStep(step)
             val tailStart = tailStart(items, budget.recent, keepRecentMessages)
             val firstRaw = items.take(tailStart).indexOfFirst { it.summary == null }
             if (settings.autoCompress && estimated > budget.trigger) automaticCompression = true
@@ -112,7 +124,18 @@ class ManagedContext(
             if ((!requested && !due) || (changed && !canReduce && estimated <= budget.trigger)) {
                 if (estimated > budget.input) error("上下文超过可用预算。请启用自动压缩、手动压缩，或调整模型容量与近期保留预算。")
                 if (force && !changed) error("没有可压缩的历史。请减少保留的近期消息数。")
+                if (pruned.newEntries.isNotEmpty()) {
+                    val batch = ContextPruneBatch(
+                        conversationId = conversationId,
+                        underPressure = underPressure,
+                        entries = pruned.newEntries,
+                    )
+                    check(persistPruning(batch, messages)) { "裁剪期间对话内容发生变化，请重新发送。" }
+                    val saved = batch.entries.sumOf { it.tokensSaved.toLong() }
+                    status.value = "本次裁剪 ${batch.entries.size} 个旧工具结果，约释放 $saved tokens"
+                }
                 lastEstimate = estimateStep(step, calibrated = false)
+                inspect(step, pruned, items)
                 return step
             }
             check(tailStart > 0) { "最近一轮内容已经超过上下文预算，无法在保留完整工具结果的情况下继续。请调整保留预算或使用更大上下文的模型。" }

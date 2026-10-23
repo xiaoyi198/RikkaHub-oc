@@ -20,6 +20,9 @@ import me.rerere.ai.provider.TextGenerationParams
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.limitContext
 import me.rerere.rikkahub.R
+import me.rerere.rikkahub.data.ai.context.ContextInspection
+import me.rerere.rikkahub.data.ai.context.PrunedContext
+import me.rerere.rikkahub.data.ai.context.inspectContext
 import me.rerere.rikkahub.data.ai.context.ContextHistory
 import me.rerere.rikkahub.data.ai.context.ManagedContext
 import me.rerere.rikkahub.data.ai.context.contextBudget
@@ -50,6 +53,7 @@ import me.rerere.rikkahub.data.datastore.findModelById
 import me.rerere.rikkahub.data.datastore.findProvider
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.model.Assistant
+import me.rerere.rikkahub.data.model.ContextPruneBatch
 import me.rerere.rikkahub.data.model.ContextSummary
 import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.model.MemoryFile
@@ -158,9 +162,20 @@ class ChatRequestFactory(
         messages: List<UIMessage>,
         processingStatus: MutableStateFlow<String?>,
         persistSummary: suspend (ContextSummary) -> Boolean = { false },
+        persistPruning: suspend (ContextPruneBatch, List<UIMessage>) -> Boolean = { _, _ -> false },
+        inspection: MutableStateFlow<ContextInspection?> = MutableStateFlow(null),
     ): Pair<AgentRequest, AgentHooks> {
         turn.contextHistory?.update(messages)
-        val managed = turn.contextHistory?.let { createManagedContext(turn, it, processingStatus, persistSummary) }
+        var prepared: ContextInspection? = null
+        fun publish(step: StepRequest, originals: List<UIMessage>, pruned: PrunedContext, summaryIds: Set<Uuid>) {
+            prepared = inspectContext(step, originals, turn.assistant, turn.settings.contextManagement, pruned, summaryIds)
+            inspection.value = prepared
+        }
+        val managed = turn.contextHistory?.let { history ->
+            createManagedContext(turn, history, processingStatus, persistSummary, persistPruning) { step, pruned, items ->
+                publish(step, history.messages, pruned, items.filter { it.summary != null }.mapTo(HashSet()) { it.message.id })
+            }
+        }
         val request = AgentRequest(
             provider = usageRecorder.wrap(
                 providerManager.getProviderByType(turn.providerSetting),
@@ -184,7 +199,9 @@ class ChatRequestFactory(
             override suspend fun prepareStep(messages: List<UIMessage>): StepRequest {
                 Log.i(TAG, "prepareStep: ${turn.model.id}")
                 return managed?.prepare(messages, build = { buildStep(turn, it, processingStatus, limitMessages = false) })
-                    ?: buildStep(turn, messages, processingStatus)
+                    ?: buildStep(turn, messages, processingStatus).also {
+                        publish(it, messages, PrunedContext(emptyList()), emptySet())
+                    }
             }
 
             override suspend fun recoverContext(messages: List<UIMessage>, error: Throwable): StepRequest? {
@@ -210,6 +227,12 @@ class ChatRequestFactory(
             override suspend fun finishStep(message: UIMessage, newPartsFrom: Int): UIMessage {
                 turn.workspaceSource.set(message.id.toString())
                 managed?.recordUsage(message, newPartsFrom)
+                prepared?.let { snapshot ->
+                    val current = inspection.value
+                    if (current?.requestId == snapshot.requestId) {
+                        inspection.compareAndSet(current, snapshot.copy(usage = message.lastRequestUsage()))
+                    }
+                }
                 return message.transformNewParts(newPartsFrom) {
                     it.transforms(outputTransformers, context, turn.model, turn.assistant, turn.settings)
                         .visualTransforms(outputTransformers, context, turn.model, turn.assistant, turn.settings)
@@ -227,9 +250,10 @@ class ChatRequestFactory(
         keepRecentMessages: Int,
         additionalPrompt: String,
         persistSummary: suspend (ContextSummary) -> Boolean,
+        persistPruning: suspend (ContextPruneBatch, List<UIMessage>) -> Boolean,
     ) {
         val history = checkNotNull(turn.contextHistory)
-        createManagedContext(turn, history, processingStatus, persistSummary).prepare(
+        createManagedContext(turn, history, processingStatus, persistSummary, persistPruning).prepare(
             messages,
             build = { buildStep(turn, it, processingStatus, limitMessages = false) },
             force = true,
@@ -241,11 +265,18 @@ class ChatRequestFactory(
     /** Called inside ChatService's session write lock; no conversation snapshot is written here. */
     suspend fun saveContextSummary(summary: ContextSummary) = contextSummaryRepository.save(summary)
 
+    suspend fun saveContextPruneBatch(batch: ContextPruneBatch) = contextSummaryRepository.savePruneBatch(batch)
+
+    suspend fun clearPruningOfMessage(conversationId: Uuid, messageId: Uuid) =
+        contextSummaryRepository.clearPruningOfMessage(conversationId.toString(), messageId.toString())
+
     private fun createManagedContext(
         turn: ChatTurnContext,
         history: ContextHistory,
         status: MutableStateFlow<String?>,
         persist: suspend (ContextSummary) -> Boolean,
+        persistPruning: suspend (ContextPruneBatch, List<UIMessage>) -> Boolean,
+        inspect: (StepRequest, PrunedContext, List<me.rerere.rikkahub.data.ai.context.ContextItem>) -> Unit = { _, _, _ -> },
     ) = ManagedContext(
         conversationId = turn.conversationId.toString(),
         settings = turn.settings.contextManagement,
@@ -257,6 +288,8 @@ class ChatRequestFactory(
         status = status,
         persist = persist,
         summarize = { transcript, tokens -> generateManagedSummary(turn, transcript, tokens) },
+        persistPruning = persistPruning,
+        inspect = inspect,
     )
 
     /** Chunk oversized ranges without dropping their contents; only validated final summaries are committed. */

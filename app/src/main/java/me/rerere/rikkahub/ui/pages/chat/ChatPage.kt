@@ -71,6 +71,7 @@ import me.rerere.rikkahub.data.repository.WorkspaceRepository
 import me.rerere.rikkahub.service.ChatError
 import me.rerere.rikkahub.ui.components.ai.ChatAttachmentPickerActions
 import me.rerere.rikkahub.ui.components.ai.ChatInput
+import me.rerere.rikkahub.ui.components.ai.ContextInsightsSheet
 import me.rerere.rikkahub.ui.components.ai.FilesPicker
 import me.rerere.rikkahub.ui.components.ai.SearchMode
 import me.rerere.rikkahub.ui.components.ai.WorkspaceTasksButton
@@ -294,6 +295,7 @@ private fun ChatPageContent(
     val taskDrawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val hazeState = rememberHazeState()
     var showFilesSheet by remember { mutableStateOf(false) }
+    var showContextInsights by remember(conversation.id) { mutableStateOf(false) }
     val attachmentPickerActions = rememberChatAttachmentPickerActions(
         inputState = inputState,
         setting = setting,
@@ -488,6 +490,20 @@ private fun ChatPageContent(
                 )
             }
 
+            if (showContextInsights) {
+                val inspection by vm.contextInspection.collectAsStateWithLifecycle()
+                ContextInsightsSheet(
+                    conversation = conversation,
+                    assistant = assistant,
+                    model = currentChatModel,
+                    inspection = inspection,
+                    onDismiss = { showContextInsights = false },
+                    onSettings = {
+                        showContextInsights = false
+                        navController.navigate(me.rerere.rikkahub.Screen.SettingContext)
+                    },
+                )
+            }
             if (showFilesSheet) {
                 ChatFilesPickerSheet(
                     inputState = inputState,
@@ -499,6 +515,10 @@ private fun ChatPageContent(
                     attachmentPickerActions = attachmentPickerActions,
                     onStartVoiceMode = onStartVoiceMode,
                     onDismiss = { showFilesSheet = false },
+                    onContextInsights = {
+                        showFilesSheet = false
+                        showContextInsights = true
+                    },
                 )
             }
         }
@@ -516,6 +536,7 @@ private fun ChatFilesPickerSheet(
     attachmentPickerActions: ChatAttachmentPickerActions,
     onStartVoiceMode: () -> Unit,
     onDismiss: () -> Unit,
+    onContextInsights: () -> Unit,
 ) {
     val voiceState by vm.voiceSession.state.collectAsStateWithLifecycle()
     val focusManager = LocalFocusManager.current
@@ -542,6 +563,7 @@ private fun ChatFilesPickerSheet(
             chatModel = chatModel,
             mcpManager = vm.mcpManager,
             onCompressContext = vm::handleCompressContext,
+            onContextInsights = onContextInsights,
             onUpdateAssistant = vm::updateAssistant,
             onUpdateWorkspaceCwd = vm::updateWorkspaceCwd,
             showCompressDialog = showCompressDialog,

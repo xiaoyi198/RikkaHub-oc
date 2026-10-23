@@ -9,6 +9,7 @@ import me.rerere.ai.provider.TextGenerationParams
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.data.model.ContextManagementSettings
+import me.rerere.rikkahub.data.model.ContextPruneBatch
 import me.rerere.rikkahub.data.model.ContextSummary
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -20,6 +21,8 @@ class ManagedContextTest {
     private val model = Model(modelId = "test", contextLength = 4096)
     private val store = object : ContextSummaryStore {
         val summaries = mutableListOf<ContextSummary>()
+        val batches = mutableListOf<ContextPruneBatch>()
+        override suspend fun getPruneBatches(conversationId: String) = batches.toList()
         override suspend fun getAll(conversationId: String) = summaries.toList()
         override suspend fun index(conversationId: String, messages: List<UIMessage>) = Unit
     }
@@ -47,6 +50,10 @@ class ManagedContextTest {
         status = MutableStateFlow(null),
         persist = persist,
         summarize = summarize,
+        persistPruning = { batch, _ ->
+            store.batches.add(batch)
+            true
+        },
     )
 
     private fun build(messages: List<UIMessage>) = StepRequest(messages, TextGenerationParams(model))
@@ -76,6 +83,44 @@ class ManagedContextTest {
     )
 
     @Test
+    fun `new savings trigger batches and committed results survive a new run and user turn`() = runTest {
+        fun tool(index: Int) = UIMessagePart.Tool(
+            "step-$index",
+            "read",
+            "{}",
+            listOf(UIMessagePart.Text("x".repeat(900)))
+        )
+        val user = UIMessage.user("work")
+        var current = UIMessage.assistant("").copy(parts = List(4) { tool(it) })
+        val config = pruneSettings.copy(autoCompress = false, pruneMinimumTokens = 400)
+        val managed = manager(listOf(user, current), config = config, tools = recall)
+        managed.recordUsage(current, 3)
+        val first = managed.prepare(listOf(user, current), build = ::build)
+        assertEquals(1, store.batches.size)
+        assertEquals(2, store.batches.single().entries.size)
+
+        current = current.copy(parts = current.parts + tool(4))
+        managed.recordUsage(current, 4)
+        val second = managed.prepare(listOf(user, current), build = ::build)
+        assertEquals(1, store.batches.size)
+        assertEquals(
+            first.messages.flatMap { it.getTools() }.take(3),
+            second.messages.flatMap { it.getTools() }.take(3)
+        )
+
+        current = current.copy(parts = current.parts + tool(5))
+        managed.recordUsage(current, 5)
+        managed.prepare(listOf(user, current), build = ::build)
+        assertEquals(2, store.batches.size)
+        assertEquals(2, store.batches.last().entries.size)
+
+        val nextTurn = listOf(user, current, UIMessage.user("continue"))
+        val restored = manager(nextTurn, config = config, tools = recall).prepare(nextTurn, build = ::build)
+        assertEquals(4, restored.messages.flatMap { it.getTools() }.count { it.output.toString().contains("cleared") })
+        assertEquals(2, store.batches.size)
+    }
+
+    @Test
     fun `pruning runs before summary and can work with automatic summary disabled`() = runTest {
         for (auto in listOf(true, false)) {
             val messages = toolHistory()
@@ -95,6 +140,146 @@ class ManagedContextTest {
             assertTrue(result.messages.sumOf(::estimateContextMessage) < 3200)
             assertTrue(messages[1].getTools().first().output.toString().contains("SECRET_0"))
         }
+    }
+
+    @Test
+    fun `small pruning batches defer automatic summaries during a tool run`() = runTest {
+        fun tool(index: Int, chars: Int = 900) = UIMessagePart.Tool(
+            "call-$index",
+            "read",
+            "{}",
+            listOf(UIMessagePart.Text("x".repeat(chars)))
+        )
+        val user = UIMessage.user("work")
+        var current = UIMessage.assistant("").copy(parts = List(7) { tool(it) })
+        val config = ContextManagementSettings(enabled = true, prune = true, recentTokens = 400)
+        val managed = manager(listOf(user, current), config = config, tools = recall)
+        val budget = contextBudget(model.contextLength, 400, config)
+        repeat(5) { index ->
+            val consumed = current.parts.size
+            current = current.copy(parts = current.parts + tool(consumed, if (index == 0) 3000 else 900))
+            managed.recordUsage(current, newPartsFrom = consumed)
+            val messages = listOf(user, current)
+            val result = managed.prepare(messages, build = ::build)
+            assertTrue("Pruning should avoid summary on step $index", store.summaries.isEmpty())
+            val projected = result.messages.flatMap { it.getTools() }
+            assertEquals(current.getTools().size, projected.size)
+            assertTrue(projected.first().output.toString().contains("Old tool result content cleared"))
+            assertEquals(current.getTools().last(), projected.last())
+            assertTrue(result.messages.sumOf(::estimateContextMessage) <= budget.trigger)
+            assertTrue(current.getTools().none { it.output.toString().contains("Old tool result content cleared") })
+        }
+    }
+
+    @Test
+    fun `small pruning batches also keep requests within budget with automatic summaries disabled`() = runTest {
+        val config = ContextManagementSettings(
+            enabled = true,
+            prune = true,
+            autoCompress = false,
+            pruneProtectTokens = 1,
+            pruneMinimumTokens = 1000,
+        )
+        val messages = listOf(
+            UIMessage.user("old task"),
+            UIMessage.assistant("").copy(parts = listOf(
+                UIMessagePart.Tool("old", "read", "{}", listOf(UIMessagePart.Text("x".repeat(1500)))),
+                UIMessagePart.Tool("keep", "read", "{}", listOf(UIMessagePart.Text("x".repeat(1500)))),
+            )),
+            UIMessage.user("recent one"),
+            UIMessage.assistant("details ".repeat(850)),
+            UIMessage.user("recent two"),
+        )
+        val result = manager(messages, config = config, tools = recall).prepare(messages, build = ::build)
+        assertTrue(store.summaries.isEmpty())
+        assertTrue(result.messages.flatMap { it.getTools() }.first().output.toString().contains("history_read"))
+        assertEquals(messages.last(), result.messages.last())
+    }
+
+    @Test
+    fun `existing summaries do not starve small pruning batches on later runs`() = runTest {
+        val config = pruneSettings.copy(pruneMinimumTokens = 1000)
+        val old = UIMessage.user("earlier details ".repeat(100))
+        val summary = ContextSummary(
+            conversationId = "c",
+            text = "Earlier task constraints.",
+            sources = contextUnits(listOf(old)).map { it.source },
+            tokensBefore = 500,
+            tokensAfter = 8,
+        )
+        store.summaries.add(summary)
+        val messages = listOf(
+            old,
+            UIMessage.assistant("").copy(parts = List(2) { index ->
+                UIMessagePart.Tool("call-$index", "read", "{}", listOf(UIMessagePart.Text("x".repeat(1500))))
+            }),
+            UIMessage.user("recent one"),
+            UIMessage.assistant("details ".repeat(830)),
+            UIMessage.user("recent two"),
+        )
+        repeat(2) {
+            val result = manager(messages, config = config, tools = recall).prepare(messages, build = ::build)
+            assertEquals(listOf(summary), store.summaries)
+            val tools = result.messages.flatMap { it.getTools() }
+            assertTrue(tools.first().output.toString().contains("history_read"))
+            assertEquals(messages[1].getTools().last(), tools.last())
+        }
+    }
+
+    @Test
+    fun `small pruning batches still wait for the minimum when there is no context pressure`() = runTest {
+        val config = pruneSettings.copy(pruneMinimumTokens = 1000)
+        val messages = listOf(
+            UIMessage.user("old task"),
+            UIMessage.assistant("").copy(parts = List(2) { index ->
+                UIMessagePart.Tool("call-$index", "read", "{}", listOf(UIMessagePart.Text("x".repeat(1500))))
+            }),
+            UIMessage.user("recent one"),
+            UIMessage.assistant("done"),
+            UIMessage.user("recent two"),
+        )
+        val result = manager(messages, config = config, tools = recall).prepare(messages, build = ::build)
+        assertTrue(store.summaries.isEmpty())
+        assertEquals(messages[1].getTools(), result.messages.flatMap { it.getTools() })
+    }
+
+    @Test
+    fun `summary remains the fallback when a small pruning batch is insufficient`() = runTest {
+        val config = pruneSettings.copy(pruneMinimumTokens = 1000)
+        val messages = listOf(
+            UIMessage.user("old task"),
+            UIMessage.assistant("").copy(parts = List(2) { index ->
+                UIMessagePart.Tool(
+                    "call-$index",
+                    "read",
+                    "{}",
+                    listOf(UIMessagePart.Text("ORIGINAL_$index " + "x".repeat(1500)))
+                )
+            }),
+            UIMessage.user("recent one"),
+            UIMessage.assistant("details ".repeat(1200)),
+            UIMessage.user("recent two"),
+        )
+        val requests = mutableListOf<List<UIMessage>>()
+        val transcripts = mutableListOf<String>()
+        manager(messages, config = config, tools = recall, summarize = { text, _ ->
+            assertTrue(requests.any { request ->
+                request.flatMap { it.getTools() }.any {
+                    it.output.toString().contains(
+                        "Old tool result content cleared"
+                    )
+                }
+            })
+            transcripts.add(text)
+            "Original task constraints and observations."
+        }).prepare(messages, build = {
+            requests.add(it)
+            build(it)
+        })
+        assertTrue(store.summaries.isNotEmpty())
+        assertTrue(transcripts.any { it.contains("ORIGINAL_0") })
+        assertTrue(transcripts.none { it.contains("Old tool result content cleared") })
+        assertTrue(store.summaries.all { contextSourcesMatch(messages, it.sources) })
     }
 
     @Test

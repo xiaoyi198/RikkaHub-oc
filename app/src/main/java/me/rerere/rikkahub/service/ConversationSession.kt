@@ -14,6 +14,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import me.rerere.ai.ui.finishReasoning
+import me.rerere.rikkahub.data.ai.context.ContextInspection
 import me.rerere.rikkahub.data.model.Conversation
 import java.time.Instant
 import java.util.concurrent.atomic.AtomicInteger
@@ -49,15 +50,18 @@ class ConversationSession(
     // 会话状态
     private val _state = MutableStateFlow(initial)
     val state: StateFlow<Conversation> = _state.asStateFlow()
+    internal val contextInspection = MutableStateFlow<ContextInspection?>(null)
     private val initializationMutex = Mutex()
     private val writeMutex = Mutex()
     internal val contextCompressionMutex = Mutex()
+
     @Volatile
     var isInitialized = false
         private set
 
     // 上次落库、加载或新建时的状态，内存还是这个实例就说明没有要落库的修改；只在 writeMutex 内修改
     private var lastWritten: Conversation = initial
+
     @Volatile
     var existsInDatabase = false
         private set
@@ -192,6 +196,7 @@ class ConversationSession(
             }
         }
         processingStatus.value = null
+        contextInspection.value = null
     }
 
     // 失败和取消也必须保存已收到的内容，且保存完成前不能释放生成任务。
@@ -225,7 +230,7 @@ class ConversationSession(
     val isGenerating: Boolean get() = _generationJob.value?.isActive == true
     val isInUse: Boolean
         get() = refCount.get() > 0 || _generationJob.value != null ||
-                messageQueue.state.value.messages.isNotEmpty()
+            messageQueue.state.value.messages.isNotEmpty()
 
     // 空闲检查任务
     private var idleCheckJob: Job? = null

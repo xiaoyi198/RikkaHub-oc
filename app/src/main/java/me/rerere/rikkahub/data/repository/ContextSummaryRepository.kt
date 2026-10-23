@@ -10,8 +10,10 @@ import me.rerere.rikkahub.data.ai.context.contextFingerprint
 import me.rerere.rikkahub.data.ai.context.contextTranscript
 import me.rerere.rikkahub.data.ai.transformers.DocumentAsPromptTransformer
 import me.rerere.rikkahub.data.db.AppDatabase
+import me.rerere.rikkahub.data.db.entity.ContextPruneBatchEntity
 import me.rerere.rikkahub.data.db.entity.ContextSummaryEntity
 import me.rerere.rikkahub.data.db.fts.buildFtsMatchQuery
+import me.rerere.rikkahub.data.model.ContextPruneBatch
 import me.rerere.rikkahub.data.model.ContextSummary
 import me.rerere.rikkahub.utils.JsonInstant
 import kotlin.uuid.Uuid
@@ -19,8 +21,43 @@ import kotlin.uuid.Uuid
 /** Summaries are rebuildable projections. The original message nodes remain the sole transcript. */
 class ContextSummaryRepository(private val database: AppDatabase) : ContextSummaryStore {
     private val dao get() = database.contextSummaryDao()
+    private val pruneDao get() = database.contextPruneBatchDao()
 
-    override suspend fun getAll(conversationId: String): List<ContextSummary> = dao.getAll(conversationId).mapNotNull(::decode)
+    override suspend fun getPruneBatches(conversationId: String): List<ContextPruneBatch> =
+        pruneDao.getAll(conversationId).mapNotNull(::decodeBatch)
+
+    fun observePruneBatches(conversationId: String) =
+        pruneDao.observe(conversationId).map { rows -> rows.mapNotNull(::decodeBatch) }
+
+    suspend fun savePruneBatch(batch: ContextPruneBatch) = pruneDao.insert(ContextPruneBatchEntity(
+        id = batch.id,
+        conversationId = batch.conversationId,
+        payload = JsonInstant.encodeToString(batch),
+        createdAt = batch.createdAt,
+    ))
+
+    suspend fun clearPruningOfMessage(conversationId: String, messageId: String) = database.withTransaction {
+        getPruneBatches(conversationId).forEach { batch ->
+            val retained = batch.entries.filterNot { it.messageId == messageId }
+            if (retained.size != batch.entries.size) {
+                if (retained.isEmpty()) {
+                    pruneDao.delete(batch.id)
+                } else {
+                    savePruneBatch(batch.copy(entries = retained))
+                }
+            }
+        }
+    }
+
+    private fun decodeBatch(entity: ContextPruneBatchEntity): ContextPruneBatch? = runCatching {
+        JsonInstant.decodeFromString<ContextPruneBatch>(entity.payload).also {
+            require(it.id == entity.id && it.conversationId == entity.conversationId)
+        }
+    }.getOrNull()
+
+    override suspend fun getAll(conversationId: String): List<ContextSummary> = dao.getAll(
+        conversationId
+    ).mapNotNull(::decode)
 
     fun observe(conversationId: String) = dao.observe(conversationId).map { rows -> rows.mapNotNull(::decode) }
 
@@ -36,7 +73,10 @@ class ContextSummaryRepository(private val database: AppDatabase) : ContextSumma
         database.withTransaction {
             val db = database.openHelper.writableDatabase
             // Do not recreate an index after a concurrent conversation deletion.
-            val exists = db.query("SELECT 1 FROM ConversationEntity WHERE id = ?", arrayOf(conversationId)).use { it.moveToFirst() }
+            val exists = db.query(
+                "SELECT 1 FROM ConversationEntity WHERE id = ?",
+                arrayOf(conversationId)
+            ).use { it.moveToFirst() }
             if (!exists) return@withTransaction
             val stored = mutableMapOf<String, String>()
             db.query(
@@ -45,22 +85,35 @@ class ContextSummaryRepository(private val database: AppDatabase) : ContextSumma
             ).use { cursor -> while (cursor.moveToNext()) stored[cursor.getString(0)] = cursor.getString(1) }
             val currentIds = messages.mapTo(HashSet()) { it.id.toString() }
             stored.keys.filter { it !in currentIds }.forEach { id ->
-                db.execSQL("DELETE FROM context_history_fts WHERE conversation_id = ? AND message_id = ?", arrayOf(conversationId, id))
+                db.execSQL(
+                    "DELETE FROM context_history_fts WHERE conversation_id = ? AND message_id = ?",
+                    arrayOf(conversationId, id)
+                )
             }
             messages.forEach { message ->
                 val id = message.id.toString()
                 val fingerprint = contextFingerprint(message)
                 if (stored[id] == fingerprint) return@forEach
-                db.execSQL("DELETE FROM context_history_fts WHERE conversation_id = ? AND message_id = ?", arrayOf(conversationId, id))
+                db.execSQL(
+                    "DELETE FROM context_history_fts WHERE conversation_id = ? AND message_id = ?",
+                    arrayOf(conversationId, id)
+                )
                 db.execSQL(
                     "INSERT INTO context_history_fts(text, message_id, conversation_id, fingerprint) VALUES (?, ?, ?, ?)",
-                    arrayOf(contextTranscript(message, DocumentAsPromptTransformer::readDocumentContent), id, conversationId, fingerprint),
+                    arrayOf(
+                        contextTranscript(message, DocumentAsPromptTransformer::readDocumentContent),
+                        id,
+                        conversationId,
+                        fingerprint
+                    ),
                 )
             }
         }
     }
 
-    suspend fun search(conversationId: String, query: String, limit: Int): List<HistoryMatch> = withContext(Dispatchers.IO) {
+    suspend fun search(conversationId: String, query: String, limit: Int): List<HistoryMatch> = withContext(
+        Dispatchers.IO
+    ) {
         val results = mutableListOf<HistoryMatch>()
         val db = database.openHelper.readableDatabase
         val matchQuery = buildFtsMatchQuery(query) { text ->
@@ -73,7 +126,11 @@ class ContextSummaryRepository(private val database: AppDatabase) : ContextSumma
                 "FROM context_history_fts WHERE text MATCH ? AND conversation_id = ? ORDER BY rank LIMIT ?",
             arrayOf<Any>(matchQuery, conversationId, limit.coerceIn(1, 20)),
         ).use { cursor ->
-            while (cursor.moveToNext()) results.add(HistoryMatch(cursor.getString(0), cursor.getString(1), cursor.getString(2)))
+            while (cursor.moveToNext()) {
+                results.add(
+                    HistoryMatch(cursor.getString(0), cursor.getString(1), cursor.getString(2))
+                )
+            }
         }
         results
     }

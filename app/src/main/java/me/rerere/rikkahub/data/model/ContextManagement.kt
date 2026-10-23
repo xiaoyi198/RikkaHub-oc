@@ -54,3 +54,21 @@ data class ContextSummary(
     val tokensBefore: Int,
     val tokensAfter: Int,
 )
+
+/** Stable references only; editing a message explicitly clears its pruning records. */
+@Serializable
+data class ContextPruneEntry(
+    val messageId: String,
+    val toolCallId: String,
+    val marker: String,
+    val tokensSaved: Int,
+)
+
+@Serializable
+data class ContextPruneBatch(
+    val id: String = Uuid.random().toString(),
+    val conversationId: String,
+    val createdAt: Long = System.currentTimeMillis(),
+    val underPressure: Boolean = false,
+    val entries: List<ContextPruneEntry>,
+)

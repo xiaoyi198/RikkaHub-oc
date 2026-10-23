@@ -48,6 +48,7 @@ import me.rerere.rikkahub.data.ai.ChatTurnContext
 import me.rerere.rikkahub.data.ai.ConversationMetaGenerator
 import me.rerere.rikkahub.data.ai.MemoryConsolidationScheduler
 import me.rerere.rikkahub.data.ai.TranslationHandler
+import me.rerere.rikkahub.data.ai.context.ContextInspection
 import me.rerere.rikkahub.data.ai.context.contextSourcesMatch
 import me.rerere.rikkahub.data.ai.mcp.McpManager
 import me.rerere.rikkahub.data.ai.prompts.buildCompressPrompt
@@ -59,6 +60,7 @@ import me.rerere.rikkahub.data.event.AppEvent
 import me.rerere.rikkahub.data.event.AppEventBus
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.model.Assistant
+import me.rerere.rikkahub.data.model.ContextPruneBatch
 import me.rerere.rikkahub.data.model.ContextSummary
 import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.model.bindConfig
@@ -311,6 +313,9 @@ class ChatService(
     fun getProcessingStatusFlow(conversationId: Uuid): StateFlow<String?> =
         sessionManager.getProcessingStatusFlow(conversationId)
 
+    fun getContextInspectionFlow(conversationId: Uuid): StateFlow<ContextInspection?> =
+        sessionManager.getOrCreate(conversationId).contextInspection
+
     fun getConversationJobs(): Flow<Map<Uuid, Job?>> = sessionManager.getConversationJobs()
 
     private fun launchGenerationJob(
@@ -394,6 +399,7 @@ class ChatService(
     private suspend fun mutate(conversationId: Uuid, transform: (Conversation) -> Conversation): Conversation =
         withLoadedSession(conversationId) { session ->
             session.update(transform)
+            session.contextInspection.value = null
             session.flush().also { dispatchNextQueuedMessage(conversationId) }
         }
 
@@ -742,9 +748,14 @@ class ChatService(
             }
 
             val incarnation = session.incarnation
-            val (request, hooks) = requestFactory.createAgent(turn, history, session.processingStatus) { summary ->
-                persistContextSummary(session, summary, incarnation)
-            }
+            val (request, hooks) = requestFactory.createAgent(
+                turn = turn,
+                messages = history,
+                processingStatus = session.processingStatus,
+                persistSummary = { persistContextSummary(session, it, incarnation) },
+                persistPruning = { batch, originals -> persistContextPruning(session, batch, originals, incarnation) },
+                inspection = session.contextInspection,
+            )
             var finishReason: AgentFinishReason? = null
             try {
                 runAgent(request, hooks).flowOn(Dispatchers.IO).collect { event ->
@@ -962,7 +973,11 @@ class ChatService(
                                 ) { context.getString(R.string.chat_page_compress_blocked_generating) }
                                 persistContextSummary(session, summary, incarnation)
                             },
+                            persistPruning = { batch, originals ->
+                                persistContextPruning(session, batch, originals, incarnation)
+                            },
                         )
+                        session.contextInspection.value = null
                     } finally {
                         session.processingStatus.value = null
                     }
@@ -1035,6 +1050,37 @@ class ChatService(
             },
             persist = { requestFactory.saveContextSummary(summary) },
         ) && contextSourcesMatch(session.state.value.currentMessages, summary.sources)
+    }
+
+    private suspend fun persistContextPruning(
+        session: ConversationSession,
+        batch: ContextPruneBatch,
+        originals: List<UIMessage>,
+        incarnation: Int,
+    ): Boolean {
+        val expectedTools = originals.associate {
+            it.id.toString() to
+                it.getTools().associateBy { tool -> tool.toolCallId }
+        }
+        fun matches(conversation: Conversation): Boolean {
+            val selected = conversation.currentMessages
+            if (selected.take(originals.size).map { it.id } != originals.map { it.id }) return false
+            val tools = selected.associate { it.id.toString() to it.getTools().associateBy { tool -> tool.toolCallId } }
+            return batch.entries.all { entry ->
+                val expected = expectedTools[entry.messageId]?.get(entry.toolCallId)
+                expected != null && tools[entry.messageId]?.get(entry.toolCallId) == expected
+            }
+        }
+        if (session.incarnation != incarnation || !matches(session.state.value)) return false
+        session.flush()
+        return session.updateMetadata(
+            expectedIncarnation = incarnation,
+            transform = { latest ->
+                check(matches(latest)) { "对话内容已变化，裁剪未应用。" }
+                latest
+            },
+            persist = { requestFactory.saveContextPruneBatch(batch) },
+        )
     }
 
     // ---- 聊天页配置 ----
@@ -1410,6 +1456,7 @@ class ChatService(
             conversation.deleteMessage(messageId)
                 ?: if (failIfMissing) throw NotFoundException("Message not found") else conversation
         }
+        requestFactory.clearPruningOfMessage(conversationId, messageId)
     }
 
     suspend fun deleteMessage(

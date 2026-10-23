@@ -8,6 +8,7 @@ import me.rerere.ai.provider.Model
 import me.rerere.ai.provider.TextGenerationParams
 import me.rerere.ai.ui.UIMessage
 import me.rerere.rikkahub.data.model.ContextManagementSettings
+import me.rerere.rikkahub.data.model.ContextPruneBatch
 import me.rerere.rikkahub.data.model.ContextSummary
 import me.rerere.rikkahub.utils.JsonInstant
 import org.junit.Assert.assertEquals
@@ -19,6 +20,7 @@ class ContextManagementPolicyTest {
     private val config = ContextManagementSettings(enabled = true)
     private val summaries = mutableListOf<ContextSummary>()
     private val store = object : ContextSummaryStore {
+        override suspend fun getPruneBatches(conversationId: String) = emptyList<ContextPruneBatch>()
         override suspend fun getAll(conversationId: String) = summaries.toList()
         override suspend fun index(conversationId: String, messages: List<UIMessage>) = Unit
     }
@@ -31,6 +33,7 @@ class ContextManagementPolicyTest {
             true
         },
         summarize = { _, _ -> "summary ".repeat(1500) },
+        persistPruning = { _, _ -> false },
     )
 
     private fun build(messages: List<UIMessage>) = StepRequest(messages, TextGenerationParams(model))

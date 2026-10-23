@@ -89,6 +89,10 @@ class ContextPruningTest {
         val belowMinimum = settings.copy(pruneMinimumTokens = result.tokensSaved + 1)
         assertEquals(items, pruneContext(items, messages, belowMinimum, 10_000, true).items)
         assertEquals(
+            result,
+            pruneContext(items, messages, belowMinimum, 10_000, true, ignoreMinimum = true)
+        )
+        assertEquals(
             result.items,
             pruneContext(items, messages, settings.copy(pruneMinimumTokens = result.tokensSaved), 10_000, true).items
         )
@@ -106,6 +110,7 @@ class ContextPruningTest {
             )
         }
         assertEquals(0, pruneContext(project(tiny), tiny, settings, 10_000, true).toolCount)
+        assertEquals(0, pruneContext(project(tiny), tiny, settings, 10_000, true, ignoreMinimum = true).toolCount)
     }
 
     @Test
@@ -134,6 +139,17 @@ class ContextPruningTest {
         assertEquals(1, result.toolCount)
         val tools = result.items.flatMap { it.message.getTools() }.associateBy { it.toolCallId }
         protected.forEach { assertEquals(it, tools[it.toolCallId]) }
+        assertEquals(
+            result,
+            pruneContext(
+                project(messages),
+                messages,
+                settings.copy(pruneProtectedTools = listOf("important")),
+                10_000,
+                true,
+                ignoreMinimum = true,
+            )
+        )
     }
 
     @Test
@@ -185,7 +201,35 @@ class ContextPruningTest {
             tokensAfter = 4,
         )
         val projected = projectContext(contextUnits(messages), listOf(summary))
-        val after = pruneContext(projected, messages, config, 26_400, true, originalItems = originalItems)
+        val after =
+            pruneContext(
+                projected,
+                messages,
+                config,
+                26_400,
+                true,
+                originalItems = originalItems,
+                committed = before.entries
+            )
+        val largeMinimum = config.copy(pruneMinimumTokens = 20_000)
+        assertEquals(originalItems, pruneContext(originalItems, messages, largeMinimum, 26_400, true).items)
+        assertEquals(
+            before,
+            pruneContext(originalItems, messages, largeMinimum, 26_400, true, ignoreMinimum = true)
+        )
+        assertEquals(
+            after.items,
+            pruneContext(
+                projected,
+                messages,
+                largeMinimum,
+                26_400,
+                true,
+                originalItems = originalItems,
+                ignoreMinimum = true,
+                committed = before.entries,
+            ).items
+        )
         assertEquals(7, before.toolCount)
         assertEquals(3, after.toolCount)
         val remaining = after.items.flatMap { it.message.getTools() }.first { it.toolCallId == "call-4" }
